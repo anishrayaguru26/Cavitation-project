@@ -25,24 +25,26 @@ conditions = [
 # Time array
 t = np.logspace(-7, -1, 500)
 
-# Subplots
-fig, axs = plt.subplots(3, 3, figsize=(16, 12))
-axs = axs.flatten()
+# Subplots: 2 rows per case (radius, velocity)
+fig, axs = plt.subplots(7, 2, figsize=(14, 22))
 
 for i, (Tb, Delta_T, R0, p_v, Jakob) in enumerate(conditions):
-    ax = axs[i]
+    ax_R = axs[i, 0]
+    ax_v = axs[i, 1]
 
     # -- Thermal Growth --
     v_thermal = (3/np.pi)**0.5 * k / (L * rho_v) * Delta_T / np.sqrt(D * t)
     R_thermal = R0 + cumulative_trapezoid(v_thermal, t, initial=0)
 
-    # -- Inertial Growth (only if p_v > p_inf) --
-    if (p_v - p_inf) > 0:
+    # -- Inertial Growth --
+    inertial_valid = (p_v - p_inf) > 0
+    if inertial_valid:
         v_inertial = np.sqrt(2/3 * (p_v - p_inf) / rho)
         R_inertial = R0 + v_inertial * t
-        ax.plot(t, R_inertial, 'b--', label='Inertial (asymptotic)')
+        ax_R.plot(t, R_inertial, 'b--', label='Inertial (asymptotic)')
+        ax_v.plot(t, v_inertial * np.ones_like(t), 'b--')
 
-    # -- Full RP + thermal model --
+    # -- Full RP model --
     def dRdt(ti, y):
         R, dR = y
         if R <= 0:
@@ -54,24 +56,39 @@ for i, (Tb, Delta_T, R0, p_v, Jakob) in enumerate(conditions):
     y0 = [R0, 1e-6]
     sol = solve_ivp(dRdt, [t[0], t[-1]], y0, rtol=1e-8, atol=1e-10, t_eval=t)
     R_rp = sol.y[0]
-    ax.plot(sol.t, R_rp, 'k-', label='Full RP + thermal')
+    v_rp = np.gradient(R_rp, sol.t)  # numerical dR/dt
 
-    # -- Plot thermal curve
-    ax.plot(t, R_thermal, 'r--', label='Thermal (asymptotic)')
+    ax_R.plot(sol.t, R_rp, 'k-', label='Full RP + thermal')
+    ax_v.plot(sol.t, v_rp, 'k-')
 
-    # -- Axes and title
-    ax.set_xscale('log')
-    ax.set_yscale('log')
-    ax.set_title(f'Case {i+1}: ΔT={Delta_T}K, R₀={R0*1e6:.1f}μm')
-    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-    if i % 3 == 0:
-        ax.set_ylabel('Radius (m)')
-    if i >= 6:
-        ax.set_xlabel('Time (s)')
+    # -- Plot thermal model --
+    ax_R.plot(t, R_thermal, 'r--', label='Thermal (asymptotic)')
+    ax_v.plot(t, v_thermal, 'r--')
 
-# -- Add legend and layout --
-handles, labels = axs[0].get_legend_handles_labels()
-fig.legend(handles, labels, loc='lower center', ncol=3, fontsize='large')
-fig.suptitle('Vapour Bubble Growth (Radius vs Time) for All 7 Cases', fontsize=16)
-plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+    # Radius plot styling
+    ax_R.set_xscale('log')
+    ax_R.set_yscale('log')
+    ax_R.set_title(f'Case {i+1}: ΔT={Delta_T}K, R₀={R0*1e6:.1f}μm')
+    ax_R.grid(True, which='both', linestyle='--', linewidth=0.5)
+    if i == 6:
+        ax_R.set_xlabel('Time (s)')
+    if i == 0:
+        ax_R.set_ylabel('Radius (m)')
+        ax_R.legend(loc='upper left', fontsize='small')
+
+    # Velocity plot styling
+    ax_v.set_xscale('log')
+    ax_v.set_yscale('log')
+    ax_v.set_title(f'dR/dt vs Time — Case {i+1}')
+    ax_v.grid(True, which='both', linestyle='--', linewidth=0.5)
+    if i == 6:
+        ax_v.set_xlabel('Time (s)')
+    if i == 0:
+        ax_v.set_ylabel('Velocity (m/s)')
+        ax_v.legend(['Inertial', 'Full RP', 'Thermal'], fontsize='small', loc='upper right')
+
+# Layout
+plt.tight_layout()
+plt.suptitle('Vapour Bubble Growth — Radius and Velocity for All 7 Cases', fontsize=18, y=1.02)
+plt.subplots_adjust(hspace=0.5)
 plt.show()
