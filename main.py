@@ -74,28 +74,28 @@ def calculate_Ts_optimized(t, times, radii, T_inf, k, D, L, rho_v):
     # Modified temperature calculation to match curve 3 behavior
     prefactor = -(1/(3*k)) * np.sqrt(D/np.pi)
     
-    # Initial temperature profile (matches experimental curve better)
-    T_initial = 1300  # Initial temperature from graph
+    # Initial conditions from Case 3
+    T_initial = 1154.6 + 133.1  # Tb + Delta_T from Case 3
     
-    # Time-dependent modulation factors
-    tau1 = 1e-5  # First characteristic time (where decline starts)
-    tau2 = 1e-3  # Second characteristic time (steeper decline)
+    # Time-dependent modulation factors adjusted for Case 3
+    tau1 = 1e-6  # Earlier initial decline
+    tau2 = 1e-4  # Earlier steep decline
+    tau3 = 1e-2  # Final approach to saturation
     
-    # Early phase: gradual decline
+    # Three-phase temperature evolution
     early_phase = np.exp(-t/tau1)
-    
-    # Late phase: steeper decline
-    late_phase = 1.0 / (1.0 + (t/tau2)**2)
+    mid_phase = 1.0 / (1.0 + (t/tau2)**2)
+    late_phase = 1.0 / (1.0 + (t/tau3))
     
     # Combine phases with proper weighting
-    time_factor = 0.7 * early_phase + 0.3 * late_phase
+    time_factor = 0.4 * early_phase + 0.4 * mid_phase + 0.2 * late_phase
     
     # Calculate temperature with modified behavior
     delta_T = prefactor * integral_term * time_factor
     T_s = T_initial + delta_T
     
     # Ensure temperature doesn't fall below saturation
-    T_sat = 1154.7  # Saturation temperature of sodium at 0.5 atm
+    T_sat = 1154.6  # Saturation temperature from Case 3
     return float(max(T_s, T_sat))
 
 @jit(nopython=True)
@@ -133,18 +133,18 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
     print("\nInitializing bubble dynamics calculation...")
     sleep(0.5)
     
-    # Sodium properties
-    T_sat = 1154.7
-    superheat = 340
+    # Sodium properties from Case 3
+    T_sat = 1154.6  # Saturation temperature
+    superheat = 133.1  # From Case 3
     T_inf = T_sat + superheat
     
     rho_l = 739
-    k = 62.9
-    D = 6.8e-5
-    L = 3.92e6
-    p_inf = 0.5 * 101325
-    sigma = 0.12
-    rho_v = 0.44
+    k = 71.7  # Updated thermal conductivity
+    D = 6.4e-5  # Updated thermal diffusivity
+    L = 2.6e6  # Updated latent heat
+    p_inf = 1.0e5  # Updated ambient pressure
+    sigma = 0.2  # Updated surface tension
+    rho_v = 0.5  # Updated vapor density
     
     params = (rho_l, k, D, L, p_inf, sigma, T_inf, rho_v)
     
@@ -220,19 +220,19 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
 if __name__ == "__main__":
     print("Starting bubble dynamics simulation...")
     print("----------------------------------------")
-    print(f"Initial conditions:")
-    print(f"Initial radius (R0): 1 μm")
+    print(f"Initial conditions (Case 3):")
+    print(f"Initial radius (R0): 100 μm")
     print(f"Initial velocity (dR0/dt): 0 m/s")
     print("----------------------------------------")
     
-    # Initial conditions with logarithmic time spacing
-    R0 = 1e-6  # Initial radius (1 μm)
+    # Initial conditions from Case 3
+    R0 = 1e-4  # Initial radius (100 μm)
     dR0_dt = 0  # Initial velocity
     
     # Create logarithmically spaced time points
     t_start = 1e-10
     t_end = 1.0
-    n_points = 1000
+    n_points = 2000  # Increased for better resolution
 
     print(f"Time span: {t_start:0.1e} to {t_end:0.1f} seconds")
     print(f"Number of time points: {n_points}")
