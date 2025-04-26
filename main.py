@@ -326,120 +326,116 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
     t_history = np.array([t_span[0]])
     
     print("\nSolving Rayleigh-Plesset equation...")
-    with tqdm(total=n_points-1, desc="Time steps", unit="step") as pbar:
-        for i in range(1, n_points):
-            t = t_span[i]
-            dt = t - t_span[i-1]
+    progress_steps = 10  # Number of progress marks to show
+    last_percentage = -1
+    
+    for i in range(1, n_points):
+        t = t_span[i]
+        dt = t - t_span[i-1]
+        
+        # Show static progress bar
+        current_percentage = int((i / n_points) * progress_steps)
+        if current_percentage != last_percentage:
+            progress = "=" * current_percentage + ">" + "." * (progress_steps - current_percentage - 1)
+            print(f"\rProgress: [{progress}] {int((i / n_points) * 100)}%", end="", flush=True)
+            last_percentage = current_percentage
             
-            # Print current simulation time periodically
+            # Print current state on the same line
             if i % 100 == 0:
-                print(f"\nSimulation progress: {i/n_points*100:.1f}%")
-                print(f"Time: {t:.2e} s")
-                print(f"Bubble radius: {R[i-1]:.2e} m")
-                print(f"Wall velocity: {dR_dt[i-1]:.2e} m/s")
-                print(f"Surface temperature: {T_s_history[i-1]:.2f} K")
-                sys.stdout.flush()  # Ensure output is displayed immediately
+                print(f" | t={t:.2e}s R={R[i-1]:.2e}m v={dR_dt[i-1]:.2e}m/s", end="", flush=True)
+        
+        # Calculate surface temperature
+        T_s = calculate_Ts_optimized(t, t_history, R_history, T_inf, k, D, rho_v, superheat)
+        T_s_history[i-1] = T_s
+        
+        # Update all temperature-dependent properties
+        rho_l = get_liquid_density(T_s)
+        rho_v = get_vapor_density(T_s)
+        L = get_latent_heat(T_s)
+        sigma = get_surface_tension(T_s)  # Update surface tension based on current temperature
+        
+        params = (rho_l, k, D, L, p_inf, sigma, T_inf, rho_v)
+        
+        # Initialize current state variables
+        R_current = max(R[i-1], 1e-12)  # Ensure minimum radius
+        dR_dt_current = dR_dt[i-1]
+        
+        # Get initial acceleration for adaptive timestepping
+        _, R_ddot = rayleigh_plesset_optimized(R_current, dR_dt_current, t, T_s, params)
+        
+        # Adaptive sub-stepping with improved numerical stability
+        try:
+            # Calculate substeps based on both velocity and radius changes
+            vel_factor = abs(dR_dt_current) * dt / (0.01 * R_current)
+            acc_factor = abs(R_ddot) * dt * dt / (0.01 * R_current)
+            substep_factor = max(vel_factor, acc_factor)
             
-            # Calculate surface temperature
-            T_s = calculate_Ts_optimized(t, t_history, R_history, T_inf, k, D, rho_v, superheat)
-            T_s_history[i-1] = T_s
+            # Handle potential NaN or infinity
+            if np.isnan(substep_factor) or np.isinf(substep_factor):
+                n_substeps = 1000  # Default to high resolution if calculation fails
+            else:
+                n_substeps = max(1, min(5000, int(np.ceil(substep_factor))))
+        except:
+            # More robust fallback that avoids division by zero
+            n_substeps = 1000 if R_current < 1e-9 else 200  # More substeps for very small bubbles
+        
+        dt_sub = dt / n_substeps
+        
+        # Sub-step integration with improved stability and iteration control
+        max_iterations = 100
+        iteration = 0
+        while iteration < max_iterations:
+            # Ensure R_current is positive and finite
+            if not (np.isfinite(R_current) and R_current > 0):
+                print(f"\nWarning: R_current reset at t = {t:.2e} s")
+                R_current = 1e-12
+                dR_dt_current = 0.0
             
-            # Update all temperature-dependent properties
-            rho_l = get_liquid_density(T_s)
-            rho_v = get_vapor_density(T_s)
-            L = get_latent_heat(T_s)
-            sigma = get_surface_tension(T_s)  # Update surface tension based on current temperature
-            
-            params = (rho_l, k, D, L, p_inf, sigma, T_inf, rho_v)
-            
-            # Initialize current state variables
-            R_current = max(R[i-1], 1e-12)  # Ensure minimum radius
-            dR_dt_current = dR_dt[i-1]
-            
-            # Get initial acceleration for adaptive timestepping
-            _, R_ddot = rayleigh_plesset_optimized(R_current, dR_dt_current, t, T_s, params)
-            
-            # Adaptive sub-stepping with improved numerical stability
             try:
-                # Calculate substeps based on both velocity and radius changes
-                vel_factor = abs(dR_dt_current) * dt / (0.01 * R_current)
-                acc_factor = abs(R_ddot) * dt * dt / (0.01 * R_current)
-                substep_factor = max(vel_factor, acc_factor)
+                dR_dt_new, R_ddot = rayleigh_plesset_optimized(
+                    R_current, dR_dt_current, t, T_s, params
+                )
                 
-                # Handle potential NaN or infinity
-                if np.isnan(substep_factor) or np.isinf(substep_factor):
-                    n_substeps = 1000  # Default to high resolution if calculation fails
-                else:
-                    n_substeps = max(1, min(5000, int(np.ceil(substep_factor))))
-            except:
-                # More robust fallback that avoids division by zero
-                n_substeps = 1000 if R_current < 1e-9 else 200  # More substeps for very small bubbles
-            
-            dt_sub = dt / n_substeps
-            
-            # Sub-step integration with improved stability and iteration control
-            max_iterations = 100
-            iteration = 0
-            while iteration < max_iterations:
-                # Ensure R_current is positive and finite
-                if not (np.isfinite(R_current) and R_current > 0):
-                    print(f"\nWarning: R_current reset at t = {t:.2e} s")
-                    R_current = 1e-12
-                    dR_dt_current = 0.0
+                # Handle any NaN or infinite values
+                if not np.isfinite(dR_dt_new) or not np.isfinite(R_ddot):
+                    print(f"\nWarning: Non-finite values at t = {t:.2e} s")
+                    dR_dt_new = dR_dt_current
+                    R_ddot = 0.0
                 
-                try:
-                    dR_dt_new, R_ddot = rayleigh_plesset_optimized(
-                        R_current, dR_dt_current, t, T_s, params
-                    )
-                    
-                    # Handle any NaN or infinite values
-                    if not np.isfinite(dR_dt_new) or not np.isfinite(R_ddot):
-                        print(f"\nWarning: Non-finite values at t = {t:.2e} s")
-                        dR_dt_new = dR_dt_current
-                        R_ddot = 0.0
-                    
-                    # Update with velocity limiting and stability checks
-                    R_new = max(1e-12, R_current + dt_sub * np.clip(dR_dt_new, -1e6, 1e6))
-                    dR_dt_new = np.clip(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
-                    
-                    # Check convergence
-                    if abs((R_new - R_current)/R_current) < 1e-6:
-                        R_current = R_new
-                        dR_dt_current = dR_dt_new
-                        break
-                        
+                # Update with velocity limiting and stability checks
+                R_new = max(1e-12, R_current + dt_sub * np.clip(dR_dt_new, -1e6, 1e6))
+                dR_dt_new = np.clip(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
+                
+                # Check convergence
+                if abs((R_new - R_current)/R_current) < 1e-6:
                     R_current = R_new
                     dR_dt_current = dR_dt_new
-                    iteration += 1
-                    
-                except Exception as e:
-                    print(f"\nError at t = {t:.2e} s: {str(e)}")
-                    R_current = max(1e-12, R_current)
-                    dR_dt_current = 0.0
                     break
-            
-            if iteration >= max_iterations:
-                print(f"\nWarning: Maximum iterations reached at t = {t:.2e} s")
-            
-            # Ensure final values are physically meaningful
-            R_current = max(1e-12, min(1e-3, R_current))  # Limit radius between 1 picometer and 1 millimeter
-            dR_dt_current = np.clip(dR_dt_current, -1e6, 1e6)  # Limit velocity to ±1 km/s
-            
-            # Update state arrays
-            R[i] = R_current
-            dR_dt[i] = dR_dt_current
-            
-            # Update history arrays
-            R_history = np.append(R_history, R_current)
-            t_history = np.append(t_history, t)
-            
-            # Update progress bar with more information
-            pbar.set_postfix({
-                'Time': f'{t:.2e}s',
-                'R': f'{R_current:.2e}m',
-                'V': f'{dR_dt_current:.2e}m/s'
-            })
-            pbar.update(1)
+                    
+                R_current = R_new
+                dR_dt_current = dR_dt_new
+                iteration += 1
+                
+            except Exception as e:
+                print(f"\nError at t = {t:.2e} s: {str(e)}")
+                R_current = max(1e-12, R_current)
+                dR_dt_current = 0.0
+                break
+        
+        if iteration >= max_iterations:
+            print(f"\nWarning: Maximum iterations reached at t = {t:.2e} s")
+        
+        # Ensure final values are physically meaningful
+        R_current = max(1e-12, min(1e-3, R_current))  # Limit radius between 1 picometer and 1 millimeter
+        dR_dt_current = np.clip(dR_dt_current, -1e6, 1e6)  # Limit velocity to ±1 km/s
+        
+        # Update state arrays
+        R[i] = R_current
+        dR_dt[i] = dR_dt_current
+        
+        # Update history arrays
+        R_history = np.append(R_history, R_current)
+        t_history = np.append(t_history, t)
     
     # Calculate final temperature point
     T_s_history[-1] = calculate_Ts_optimized(t_span[-1], t_history, R_history,
@@ -450,23 +446,26 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
 
 if __name__ == "__main__":
     try:
+        print("Starting bubble dynamics simulation...")
+        print("-" * 50, flush=True)
+        
         # Initial conditions
         R0 = 1e-6  # Initial radius [m]
         dR0_dt = 0.0  # Initial velocity [m/s]
-        print("Initialized R0 and dR0_dt")
+        print(f"Initial conditions: R0 = {R0:.2e} m, dR0_dt = {dR0_dt:.2e} m/s", flush=True)
         
         # Temperature initialization
         T_sat = 881.0 + 273  # Saturation temperature at 0.5 bar [K]
         superheat = 340.0  # Specified superheat [K]
         T_inf = T_sat + superheat  # Initial temperature [K]
-        print(f"Initialized temperatures: T_sat={T_sat}, T_inf={T_inf}")
+        print(f"Temperature parameters: T_sat = {T_sat:.2f} K, T_inf = {T_inf:.2f} K", flush=True)
         
         # Time span
         t_start = 1e-9  # Start time [s]
         t_end = 1e-4    # End time [s]
         n_points = 1000  # Number of time points
         t_span = np.logspace(np.log10(t_start), np.log10(t_end), n_points)
-        print("Created time span array")
+        print(f"Time span: {t_start:.2e} to {t_end:.2e} seconds", flush=True)
         
         print("\nCalling solve_bubble_dynamics...")
         t, R, dR_dt, T_s_history = solve_bubble_dynamics(R0, dR0_dt, t_span)
