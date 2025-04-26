@@ -1,270 +1,204 @@
 #!/usr/bin/env python3
+"""
+Simplified bubble dynamics simulation with RK4 integrator
+"""
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.integrate import solve_ivp
-from scipy.interpolate import interp1d
 from tqdm import tqdm
-from joblib import Parallel, delayed
-import concurrent.futures
-from numba import jit, float64, njit  # Added Numba import
-from functools import lru_cache  # For caching functions
+from numba import njit
 
-# Physical properties of liquid sodium
-rho = 800  # Liquid density (kg/m^3)
-sigma = 0.2  # Surface tension (N/m)
-k = 60  # Thermal conductivity (W/m·K)
-D = 6.5e-7  # Thermal diffusivity (m^2/s)
-L = 4.3e6  # Latent heat of vaporization (J/kg)
-p_inf = 0.5e5  # Ambient pressure (0.5 bar in Pa)
-T_inf = 1396  # Initial liquid temperature (K)
-T_b = 1056  # Boiling temperature at 0.5 bar (K)
-R_initial = 1e-6  # Initial bubble radius (m)
-dRdt_initial = 0  # Initial bubble growth rate (m/s)
+# Physical properties of sodium
+rho_l = 800.0      # Liquid density [kg/m³]
+sigma = 0.2        # Surface tension [N/m]
+k = 60.0           # Thermal conductivity [W/(m·K)]
+D = 6.5e-7         # Thermal diffusivity [m²/s]
+L = 4.3e6          # Latent heat of vaporization [J/kg]
+p_inf = 0.5e5      # Ambient pressure (0.5 bar) [Pa]
+T_inf = 1396.0     # Initial liquid temperature [K]
+T_b = 1056.0       # Boiling temperature at 0.5 bar [K]
+R_initial = 1e-6   # Initial bubble radius [m]
+dRdt_initial = 0.0 # Initial velocity [m/s]
 
 # Antoine equation parameters for sodium vapor pressure (in bar)
 A = 4.52
-B = 5100
-C = 0
+B = 5100.0
+C = 0.0
 
-# Cache size for property calculations
-CACHE_SIZE = 1024
+@njit
+def vapor_pressure(T):
+    """Calculate vapor pressure of sodium using Antoine equation"""
+    return 10.0**(A - B/(T + C)) * 1e5  # Convert bar to Pa
 
-# Property tables for faster lookup during integration
-# Pre-compute over a relevant temperature range to avoid redundant calculations
-def create_property_tables(t_min=900, t_max=1600, n_points=500):
-    """Create tables of temperature-dependent properties for fast lookup."""
-    temps = np.linspace(t_min, t_max, n_points)
-    p_v_values = np.zeros(n_points)
+@njit
+def rayleigh_plesset_derivatives(R, dRdt, T_s):
+    """Calculate derivatives for the Rayleigh-Plesset equation"""
+    # Calculate vapor pressure based on surface temperature
+    p_v = vapor_pressure(T_s)
     
-    # Pre-calculate values
-    for i, T in enumerate(temps):
-        p_v_values[i] = vapor_pressure_raw(T)
+    # Calculate second derivative (acceleration)
+    R = max(R, 1e-12)  # Prevent division by zero
+    d2Rdt2 = (1/rho_l) * (p_v - p_inf - 2*sigma/R) / R - 1.5 * (dRdt**2) / R
     
-    # Create interpolation functions
-    p_v_interp = lambda T: np.interp(T, temps, p_v_values)
+    # Temperature evolution based on energy balance
+    dTsdt = -L * rho_l * dRdt / (k * max(R, 1e-12)) * (T_s - T_b)
     
-    return p_v_interp
-
-@njit(cache=True)
-def vapor_pressure_raw(T):
-    """Raw vapor pressure calculation without caching."""
-    return 10**(A - B/(T + C)) * 1e5  # Convert bar to Pa
-
-# Create property interpolators
-p_v_lookup = None  # Will be initialized before use
-
-@njit(cache=True)
-def compute_derivatives(R, dRdt, T_s):
-    """JIT-compiled derivatives calculation (core of dSdt function)."""
-    R = max(R, 1e-10)  # Prevent division by zero
-    p_v = vapor_pressure_raw(T_s)  # Use raw function inside njit
-    d2Rdt2 = (1/rho) * (p_v - p_inf - 2*sigma/R) / R - 1.5 * (dRdt**2) / R
-    dTsdt = -L * rho * dRdt / k * (T_s - T_b) / R
     return dRdt, d2Rdt2, dTsdt
 
-@njit(cache=True)
-def custom_rk4_step(R, dRdt, T_s, dt):
-    """
-    Custom optimized RK4 step implementation for the bubble dynamics system.
-    """
-    # First step
-    k1_R = dRdt
-    _, k1_dRdt, k1_Ts = compute_derivatives(R, dRdt, T_s)
+@njit
+def rk4_step(R, dRdt, T_s, dt):
+    """Fourth-order Runge-Kutta integrator for bubble dynamics"""
+    # k1
+    k1_dRdt, k1_d2Rdt2, k1_dTsdt = rayleigh_plesset_derivatives(R, dRdt, T_s)
     
-    # Second step
-    R2 = R + 0.5 * dt * k1_R
-    dRdt2 = dRdt + 0.5 * dt * k1_dRdt
-    T_s2 = T_s + 0.5 * dt * k1_Ts
-    k2_R = dRdt2
-    _, k2_dRdt, k2_Ts = compute_derivatives(R2, dRdt2, T_s2)
+    # k2
+    R2 = R + 0.5 * dt * k1_dRdt
+    dRdt2 = dRdt + 0.5 * dt * k1_d2Rdt2
+    T_s2 = T_s + 0.5 * dt * k1_dTsdt
+    k2_dRdt, k2_d2Rdt2, k2_dTsdt = rayleigh_plesset_derivatives(R2, dRdt2, T_s2)
     
-    # Third step
-    R3 = R + 0.5 * dt * k2_R
-    dRdt3 = dRdt + 0.5 * dt * k2_dRdt
-    T_s3 = T_s + 0.5 * dt * k2_Ts
-    k3_R = dRdt3
-    _, k3_dRdt, k3_Ts = compute_derivatives(R3, dRdt3, T_s3)
+    # k3
+    R3 = R + 0.5 * dt * k2_dRdt
+    dRdt3 = dRdt + 0.5 * dt * k2_d2Rdt2
+    T_s3 = T_s + 0.5 * dt * k2_dTsdt
+    k3_dRdt, k3_d2Rdt2, k3_dTsdt = rayleigh_plesset_derivatives(R3, dRdt3, T_s3)
     
-    # Fourth step
-    R4 = R + dt * k3_R
-    dRdt4 = dRdt + dt * k3_dRdt
-    T_s4 = T_s + dt * k3_Ts
-    k4_R = dRdt4
-    _, k4_dRdt, k4_Ts = compute_derivatives(R4, dRdt4, T_s4)
+    # k4
+    R4 = R + dt * k3_dRdt
+    dRdt4 = dRdt + dt * k3_d2Rdt2
+    T_s4 = T_s + dt * k3_dTsdt
+    k4_dRdt, k4_d2Rdt2, k4_dTsdt = rayleigh_plesset_derivatives(R4, dRdt4, T_s4)
     
-    # Combine steps
-    R_new = R + (dt/6.0) * (k1_R + 2*k2_R + 2*k3_R + k4_R)
-    dRdt_new = dRdt + (dt/6.0) * (k1_dRdt + 2*k2_dRdt + 2*k3_dRdt + k4_dRdt)
-    T_s_new = T_s + (dt/6.0) * (k1_Ts + 2*k2_Ts + 2*k3_Ts + k4_Ts)
+    # Update using weighted average
+    R_new = R + (dt/6.0) * (k1_dRdt + 2*k2_dRdt + 2*k3_dRdt + k4_dRdt)
+    dRdt_new = dRdt + (dt/6.0) * (k1_d2Rdt2 + 2*k2_d2Rdt2 + 2*k3_d2Rdt2 + k4_d2Rdt2)
+    T_s_new = T_s + (dt/6.0) * (k1_dTsdt + 2*k2_dTsdt + 2*k3_dTsdt + k4_dTsdt)
+    
+    # Apply physical bounds
+    R_new = max(R_new, 1e-12)
+    T_s_new = max(T_s_new, T_b)
     
     return R_new, dRdt_new, T_s_new
 
-def vapor_pressure(T):
-    """Cached vapor pressure calculation using lookup table when available."""
-    if p_v_lookup is not None:
-        return p_v_lookup(T)
-    else:
-        return vapor_pressure_raw(T)
+def print_state(t, R, dRdt, T_s):
+    """Print current state of the simulation"""
+    print(f"t = {t:.6e} s, R = {R:.6e} m, dR/dt = {dRdt:.6e} m/s, T_s = {T_s:.2f} K")
 
-def solve_custom_two_stage():
-    """
-    Solve using fast custom RK4 integrator with adaptive time stepping
-    """
-    print("Starting custom fast two-stage integration...")
+def solve_bubble_dynamics():
+    """Main simulation function using adaptive time stepping"""
+    print("Solving bubble dynamics with RK4 integration...")
     
-    # Initialize property tables before integration
-    global p_v_lookup
-    p_v_lookup = create_property_tables(t_min=900, t_max=1600, n_points=500)
+    # Time span - use logarithmic time steps
+    t_start = 1e-9
+    t_end = 1.0
+    n_points = 500
+    t_eval = np.logspace(np.log10(t_start), np.log10(t_end), n_points)
     
-    # Stage 1 parameters: Early evolution (fine resolution)
-    t_start_1 = 1e-9
-    t_end_1 = 1e-5
-    n_points_1 = 200  # Reduced number of points
+    # Initialize arrays
+    R = np.zeros(n_points)
+    dRdt = np.zeros(n_points)
+    T_s = np.zeros(n_points)
     
-    # Stage 2 parameters: Later evolution (coarser resolution)
-    t_end_2 = 1.0
-    n_points_2 = 200  # Reduced number of points
+    # Set initial conditions
+    R[0] = R_initial
+    dRdt[0] = dRdt_initial
+    T_s[0] = T_inf
     
-    # Create time arrays with logarithmic spacing
-    t1 = np.logspace(np.log10(t_start_1), np.log10(t_end_1), n_points_1)
-    t2 = np.logspace(np.log10(t_end_1), np.log10(t_end_2), n_points_2)
+    # Integrate with progress bar
+    print_state(t_eval[0], R[0], dRdt[0], T_s[0])
     
-    # Initialize results arrays
-    R1 = np.zeros(n_points_1)
-    dRdt1 = np.zeros(n_points_1)
-    T_s1 = np.zeros(n_points_1)
-    
-    R2 = np.zeros(n_points_2)
-    dRdt2 = np.zeros(n_points_2)
-    T_s2 = np.zeros(n_points_2)
-    
-    # Set initial conditions for first stage
-    R1[0] = R_initial
-    dRdt1[0] = dRdt_initial
-    T_s1[0] = T_inf
-    
-    # Stage 1 integration
-    print("Stage 1: Early time dynamics...")
-    with tqdm(total=n_points_1-1, desc="Stage 1") as pbar:
-        for i in range(1, n_points_1):
-            dt = t1[i] - t1[i-1]
+    with tqdm(total=n_points-1, desc="Integrating") as pbar:
+        for i in range(1, n_points):
+            # Get time interval
+            t_current = t_eval[i-1]
+            t_next = t_eval[i]
+            dt = t_next - t_current
             
-            # Subdivide each step into smaller substeps for stability
-            n_substeps = max(1, min(10, int(dt / 1e-10)))  # Adaptive substeps
-            dt_sub = dt / n_substeps
+            # Adaptive substeps for stability
+            substeps = max(1, min(100, int(dt / (1e-10 * R[i-1]))))
+            dt_sub = dt / substeps
             
-            R_tmp = R1[i-1]
-            dRdt_tmp = dRdt1[i-1]
-            T_s_tmp = T_s1[i-1]
+            # Current state
+            R_current = R[i-1]
+            dRdt_current = dRdt[i-1]
+            T_s_current = T_s[i-1]
             
-            # Perform substeps
-            for _ in range(n_substeps):
-                R_tmp, dRdt_tmp, T_s_tmp = custom_rk4_step(
-                    R_tmp, dRdt_tmp, T_s_tmp, dt_sub
+            # Multiple smaller RK4 steps
+            for _ in range(substeps):
+                R_current, dRdt_current, T_s_current = rk4_step(
+                    R_current, dRdt_current, T_s_current, dt_sub
                 )
             
             # Store results
-            R1[i] = max(R_tmp, 1e-12)  # Ensure positive radius
-            dRdt1[i] = dRdt_tmp
-            T_s1[i] = T_s_tmp
+            R[i] = R_current
+            dRdt[i] = dRdt_current
+            T_s[i] = T_s_current
+            
+            # Update progress
+            if i % 50 == 0:
+                print_state(t_next, R_current, dRdt_current, T_s_current)
             
             pbar.update(1)
     
-    # Set initial conditions for second stage from end of first stage
-    R2[0] = R1[-1]
-    dRdt2[0] = dRdt1[-1]
-    T_s2[0] = T_s1[-1]
+    # Print final state
+    print_state(t_eval[-1], R[-1], dRdt[-1], T_s[-1])
     
-    # Stage 2 integration
-    print("Stage 2: Later time dynamics...")
-    with tqdm(total=n_points_2-1, desc="Stage 2") as pbar:
-        for i in range(1, n_points_2):
-            dt = t2[i] - t2[i-1]
-            
-            # Adaptive substeps based on current radius and velocity
-            R_factor = max(1, min(100, int(R2[i-1] / R_initial)))
-            v_factor = max(1, min(100, int(abs(dRdt2[i-1]) / 0.01)))
-            n_substeps = max(1, min(20, int(dt / (1e-8 * R_factor / v_factor))))
-            dt_sub = dt / n_substeps
-            
-            R_tmp = R2[i-1]
-            dRdt_tmp = dRdt2[i-1]
-            T_s_tmp = T_s2[i-1]
-            
-            # Perform substeps
-            for _ in range(n_substeps):
-                R_tmp, dRdt_tmp, T_s_tmp = custom_rk4_step(
-                    R_tmp, dRdt_tmp, T_s_tmp, dt_sub
-                )
-            
-            # Store results
-            R2[i] = max(R_tmp, 1e-12)
-            dRdt2[i] = dRdt_tmp
-            T_s2[i] = T_s_tmp
-            
-            pbar.update(1)
-    
-    # Combine results
-    t_combined = np.concatenate((t1, t2))
-    R_combined = np.concatenate((R1, R2))
-    dRdt_combined = np.concatenate((dRdt1, dRdt2))
-    T_s_combined = np.concatenate((T_s1, T_s2))
-    
-    class CustomSolution:
-        t = t_combined
-        y = np.vstack((R_combined, dRdt_combined, T_s_combined))
-        success = True
-        
-    return CustomSolution()
+    return t_eval, R, dRdt, T_s
 
-def plot_results(solution):
-    """Create plots for R vs t, dR/dt vs t, and T_s vs t."""
-    t = solution.t
-    R = solution.y[0]
-    dRdt = solution.y[1]
-    T_s = solution.y[2]
+def plot_results(t, R, dRdt, T_s):
+    """Create plots of the simulation results"""
+    fig, axs = plt.subplots(3, 1, figsize=(10, 12))
     
-    fig, axs = plt.subplots(3, 1, figsize=(12, 14))
-    axs[0].loglog(t, R * 100, 'b-', linewidth=2)
-    axs[0].set_xlabel('Time (s)', fontsize=12)
-    axs[0].set_ylabel('Bubble Radius (cm)', fontsize=12)
-    axs[0].set_title('Bubble Radius vs Time', fontsize=14)
+    # Plot 1: Bubble Radius vs Time
+    axs[0].loglog(t, R * 100, 'b-', linewidth=2)  # Convert to cm
+    axs[0].set_xlabel('Time (s)')
+    axs[0].set_ylabel('Bubble Radius (cm)')
+    axs[0].set_title('Bubble Radius vs Time')
     axs[0].grid(True, which="both", ls="--")
     
-    axs[1].loglog(t, abs(dRdt) * 100, 'r-', linewidth=2)
-    axs[1].set_xlabel('Time (s)', fontsize=12)
-    axs[1].set_ylabel('|dR/dt| (cm/s)', fontsize=12)
-    axs[1].set_title('Bubble Growth Rate vs Time', fontsize=14)
+    # Plot 2: Bubble Wall Velocity vs Time
+    axs[1].loglog(t, np.abs(dRdt) * 100, 'r-', linewidth=2)  # Convert to cm/s
+    axs[1].set_xlabel('Time (s)')
+    axs[1].set_ylabel('Wall Velocity (cm/s)')
+    axs[1].set_title('Bubble Wall Velocity vs Time')
     axs[1].grid(True, which="both", ls="--")
     
+    # Plot 3: Surface Temperature vs Time
     axs[2].semilogx(t, T_s, 'g-', linewidth=2)
-    axs[2].set_xlabel('Time (s)', fontsize=12)
-    axs[2].set_ylabel('Surface Temperature (K)', fontsize=12)
-    axs[2].set_title('Bubble Surface Temperature vs Time', fontsize=14)
+    axs[2].set_xlabel('Time (s)')
+    axs[2].set_ylabel('Surface Temperature (K)')
+    axs[2].set_title('Surface Temperature vs Time')
     axs[2].grid(True, which="both", ls="--")
-    axs[2].axhline(y=T_b, color='k', linestyle='--', alpha=0.7)
+    axs[2].axhline(y=T_b, color='k', linestyle='--', label=f'T_boil = {T_b} K')
+    axs[2].legend()
     
     plt.tight_layout()
     plt.savefig('bubble_dynamics_results.png', dpi=300)
+    print("Plot saved as 'bubble_dynamics_results.png'")
     plt.show()
 
 def main():
-    """Main function to run the two-stage fast simulation."""
-    print("Solving Rayleigh-Plesset equation for vapor bubble in liquid sodium (OPTIMIZED MODE)...")
+    """Main function"""
+    print("======== Bubble Dynamics Simulation ========")
+    print(f"Liquid sodium at {p_inf/1e5:.1f} bar")
+    print(f"Initial temperature: {T_inf} K (superheat: {T_inf - T_b} K)")
+    print(f"Initial bubble radius: {R_initial*1e6:.1f} μm")
     
-    # Use the custom integrator for better performance
-    result = solve_custom_two_stage()
+    # Solve the system
+    t, R, dRdt, T_s = solve_bubble_dynamics()
     
-    print("Simulation completed successfully!")
-    plot_results(result)
+    # Calculate key values
+    max_R = np.max(R) * 1000  # mm
+    max_v = np.max(np.abs(dRdt)) * 100  # cm/s
+    min_T = np.min(T_s)
     
-    max_radius = np.max(result.y[0]) * 1000  # mm
-    max_velocity = np.max(result.y[1]) * 100  # cm/s
-    min_temperature = np.min(result.y[2])
+    # Print summary
+    print("\n======== Results Summary ========")
+    print(f"Maximum bubble radius: {max_R:.3f} mm")
+    print(f"Maximum bubble wall velocity: {max_v:.1f} cm/s")
+    print(f"Minimum surface temperature: {min_T:.1f} K")
     
-    print(f"Maximum bubble radius: {max_radius:.3f} mm")
-    print(f"Maximum growth rate: {max_velocity:.3f} cm/s")
-    print(f"Minimum surface temperature: {min_temperature:.1f} K")
+    # Plot results
+    plot_results(t, R, dRdt, T_s)
 
 if __name__ == "__main__":
     main()

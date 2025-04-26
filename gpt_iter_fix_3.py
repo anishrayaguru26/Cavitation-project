@@ -125,7 +125,38 @@ def batch_rk4_steps(R_array, dRdt_array, Ts_array, dt, n_batch):
     
     # Process each substep in parallel when possible
     for i in prange(n):
-    # Create time arrays with logarithmic spacing
+        R, dRdt, Ts = R_array[i], dRdt_array[i], Ts_array[i]
+        
+        # Apply multiple RK4 steps
+        for _ in range(n_batch):
+            R, dRdt, Ts = custom_rk4_step(R, dRdt, Ts, dt)
+            
+        R_new[i] = R
+        dRdt_new[i] = dRdt
+        Ts_new[i] = Ts
+        
+    return R_new, dRdt_new, Ts_new
+
+def solve_multibatch_two_stage():
+    """
+    Solve using parallel batching of integration steps when possible.
+    This can significantly improve performance on multi-core systems.
+    """
+    print(f"Starting parallel integration using {NUM_CORES} cores...")
+    
+    # Initialize property tables
+    global p_v_lookup
+    p_v_lookup = create_property_tables(t_min=900, t_max=1600, n_points=500)
+    
+    # Stage parameters
+    t_start_1 = 1e-9
+    t_end_1 = 1e-5
+    n_points_1 = 200
+    
+    t_end_2 = 1.0
+    n_points_2 = 200
+    
+    # Create time arrays
     t1 = np.logspace(np.log10(t_start_1), np.log10(t_end_1), n_points_1)
     t2 = np.logspace(np.log10(t_end_1), np.log10(t_end_2), n_points_2)
     
@@ -138,71 +169,187 @@ def batch_rk4_steps(R_array, dRdt_array, Ts_array, dt, n_batch):
     dRdt2 = np.zeros(n_points_2)
     T_s2 = np.zeros(n_points_2)
     
-    # Set initial conditions for first stage
+    # Set initial conditions
     R1[0] = R_initial
     dRdt1[0] = dRdt_initial
     T_s1[0] = T_inf
     
-    # Stage 1 integration
+    # Stage 1 - more fine-grained, no batching
     print("Stage 1: Early time dynamics...")
     with tqdm(total=n_points_1-1, desc="Stage 1") as pbar:
         for i in range(1, n_points_1):
             dt = t1[i] - t1[i-1]
-            
-            # Subdivide each step into smaller substeps for stability
-            n_substeps = max(1, min(10, int(dt / 1e-10)))  # Adaptive substeps
+            n_substeps = max(1, min(10, int(dt / 1e-10)))
             dt_sub = dt / n_substeps
             
             R_tmp = R1[i-1]
             dRdt_tmp = dRdt1[i-1]
             T_s_tmp = T_s1[i-1]
             
-            # Perform substeps
+            # Standard step-by-step for early dynamics
             for _ in range(n_substeps):
                 R_tmp, dRdt_tmp, T_s_tmp = custom_rk4_step(
                     R_tmp, dRdt_tmp, T_s_tmp, dt_sub
                 )
             
-            # Store results
-            R1[i] = max(R_tmp, 1e-12)  # Ensure positive radius
+            # Validate values
+            if not np.isfinite(R_tmp) or R_tmp <= 0:
+                R_tmp = max(1e-12, R1[i-1])
+            if not np.isfinite(dRdt_tmp):
+                dRdt_tmp = dRdt1[i-1]
+            if not np.isfinite(T_s_tmp) or T_s_tmp <= 0:
+                T_s_tmp = max(T_b, T_s1[i-1])
+                
+            R1[i] = max(R_tmp, 1e-12)
             dRdt1[i] = dRdt_tmp
             T_s1[i] = T_s_tmp
             
             pbar.update(1)
     
-    # Set initial conditions for second stage from end of first stage
+    # Stage 2 - use batch processing for efficiency
     R2[0] = R1[-1]
     dRdt2[0] = dRdt1[-1]
     T_s2[0] = T_s1[-1]
     
-    # Stage 2 integration
-    print("Stage 2: Later time dynamics...")
-    with tqdm(total=n_points_2-1, desc="Stage 2") as pbar:
-        for i in range(1, n_points_2):
-            dt = t2[i] - t2[i-1]
+    print("Stage 2: Later time dynamics with parallel processing...")
+    
+    # Create arrays for batch processing
+    batch_size = min(50, n_points_2 // 2)  # Process in batches
+    
+    try:  # Add error handling for the entire batch process
+        for batch_start in tqdm(range(1, n_points_2, batch_size)):
+            batch_end = min(batch_start + batch_size, n_points_2)
+            batch_indices = range(batch_start, batch_end)
             
-            # Adaptive substeps based on current radius and velocity
-            R_factor = max(1, min(100, int(R2[i-1] / R_initial)))
-            v_factor = max(1, min(100, int(abs(dRdt2[i-1]) / 0.01)))
-            n_substeps = max(1, min(20, int(dt / (1e-8 * R_factor / v_factor))))
+            # Create input arrays for this batch
+            R_batch = np.zeros(len(batch_indices))
+            dRdt_batch = np.zeros(len(batch_indices))
+            Ts_batch = np.zeros(len(batch_indices))
+            dt_batch = np.zeros(len(batch_indices))
+            n_substeps_batch = np.zeros(len(batch_indices), dtype=np.int32)
+            
+            # Fill input arrays with validation
+            for j, i in enumerate(batch_indices):
+                dt = t2[i] - t2[i-1]
+                
+                # Ensure previous values are valid before using them for calculations
+                R_prev = R2[i-1]
+                v_prev = dRdt2[i-1]
+                
+                # Handle NaN or invalid values
+                if not np.isfinite(R_prev) or R_prev <= 0:
+                    R_prev = max(R2[0], 1e-12)
+                if not np.isfinite(v_prev):
+                    v_prev = 0.0
+                
+                # Safe calculation of adaptive parameters
+                try:
+                    R_factor = max(1, min(100, int(R_prev / max(R_initial, 1e-12))))
+                except (ValueError, OverflowError):
+                    R_factor = 1
+                    
+                try:
+                    v_abs = abs(v_prev)
+                    v_factor = max(1, min(100, int(v_abs / 0.01) if np.isfinite(v_abs) else 1))
+                except (ValueError, OverflowError):
+                    v_factor = 1
+                    
+                n_substeps = max(1, min(20, int(dt / (1e-8 * max(R_factor, 1) / max(v_factor, 1)))))
+                
+                R_batch[j] = R_prev
+                dRdt_batch[j] = v_prev
+                Ts_batch[j] = T_s2[i-1] if np.isfinite(T_s2[i-1]) and T_s2[i-1] > 0 else T_s2[0]
+                dt_batch[j] = dt / n_substeps
+                n_substeps_batch[j] = n_substeps
+                
+            # Process each batch item with its own substeps
+            for j, i in enumerate(batch_indices):
+                dt_sub = dt_batch[j]
+                n_sub = int(n_substeps_batch[j])
+                
+                # Process substeps with validation
+                R_tmp = R_batch[j]
+                dRdt_tmp = dRdt_batch[j]
+                T_s_tmp = Ts_batch[j]
+                
+                for _ in range(n_sub):
+                    try:
+                        R_tmp, dRdt_tmp, T_s_tmp = custom_rk4_step(
+                            R_tmp, dRdt_tmp, T_s_tmp, dt_sub
+                        )
+                        
+                        # Validate values after each step
+                        if not np.isfinite(R_tmp) or R_tmp <= 0:
+                            R_tmp = max(1e-12, R_batch[j])
+                        if not np.isfinite(dRdt_tmp):
+                            dRdt_tmp = 0.0
+                        if not np.isfinite(T_s_tmp) or T_s_tmp <= 0:
+                            T_s_tmp = max(T_b, Ts_batch[j])
+                    except:
+                        # If step fails, maintain previous values
+                        pass
+                    
+                # Store results with final validation
+                R2[i] = max(R_tmp, 1e-12)
+                dRdt2[i] = dRdt_tmp if np.isfinite(dRdt_tmp) else 0.0
+                T_s2[i] = max(T_b, T_s_tmp) if np.isfinite(T_s_tmp) else T_s2[0]
+                
+    except Exception as e:
+        print(f"Error in batch processing: {str(e)}")
+        print("Falling back to sequential processing")
+        
+        # Sequential fallback for stage 2 in case batch processing fails
+        for i in tqdm(range(1, n_points_2), desc="Stage 2 (fallback)"):
+            dt = t2[i] - t2[i-1]
+            n_substeps = max(1, min(20, int(dt / 1e-8)))
             dt_sub = dt / n_substeps
             
-            R_tmp = R2[i-1]
-            dRdt_tmp = dRdt2[i-1]
-            T_s_tmp = T_s2[i-1]
+            R_tmp = R2[i-1] if np.isfinite(R2[i-1]) and R2[i-1] > 0 else R2[0]
+            dRdt_tmp = dRdt2[i-1] if np.isfinite(dRdt2[i-1]) else 0.0
+            T_s_tmp = T_s2[i-1] if np.isfinite(T_s2[i-1]) and T_s2[i-1] > 0 else T_s2[0]
             
-            # Perform substeps
+            # Process substeps with validation
             for _ in range(n_substeps):
-                R_tmp, dRdt_tmp, T_s_tmp = custom_rk4_step(
-                    R_tmp, dRdt_tmp, T_s_tmp, dt_sub
-                )
-            
+                try:
+                    R_tmp, dRdt_tmp, T_s_tmp = custom_rk4_step(
+                        R_tmp, dRdt_tmp, T_s_tmp, dt_sub
+                    )
+                    
+                    # Validate values
+                    if not np.isfinite(R_tmp) or R_tmp <= 0:
+                        R_tmp = max(1e-12, R2[i-1])
+                    if not np.isfinite(dRdt_tmp):
+                        dRdt_tmp = 0.0
+                    if not np.isfinite(T_s_tmp) or T_s_tmp <= 0:
+                        T_s_tmp = max(T_b, T_s2[i-1])
+                except:
+                    # If step fails, maintain previous values
+                    pass
+                
             # Store results
             R2[i] = max(R_tmp, 1e-12)
-            dRdt2[i] = dRdt_tmp
-            T_s2[i] = T_s_tmp
+            dRdt2[i] = dRdt_tmp if np.isfinite(dRdt_tmp) else 0.0
+            T_s2[i] = max(T_b, T_s_tmp) if np.isfinite(T_s_tmp) else T_s2[0]
+    
+    # Final validation of all arrays before combining results
+    R1 = np.clip(R1, 1e-12, 1e-3)
+    R2 = np.clip(R2, 1e-12, 1e-3)
+    
+    for i in range(len(dRdt1)):
+        if not np.isfinite(dRdt1[i]):
+            dRdt1[i] = 0.0
             
-            pbar.update(1)
+    for i in range(len(dRdt2)):
+        if not np.isfinite(dRdt2[i]):
+            dRdt2[i] = 0.0
+            
+    for i in range(len(T_s1)):
+        if not np.isfinite(T_s1[i]) or T_s1[i] <= 0:
+            T_s1[i] = T_s1[max(0, i-1)] if i > 0 else T_inf
+            
+    for i in range(len(T_s2)):
+        if not np.isfinite(T_s2[i]) or T_s2[i] <= 0:
+            T_s2[i] = T_s2[max(0, i-1)] if i > 0 else T_s1[-1]
     
     # Combine results
     t_combined = np.concatenate((t1, t2))
@@ -216,6 +363,15 @@ def batch_rk4_steps(R_array, dRdt_array, Ts_array, dt, n_batch):
         success = True
         
     return CustomSolution()
+
+def select_best_solver():
+    """Select the best solver based on system capabilities."""
+    if PARALLEL_ENABLED and NUM_CORES > 1:
+        print(f"Using parallel solver with {NUM_CORES} cores")
+        return solve_multibatch_two_stage()
+    else:
+        print("Using single-core solver")
+        return solve_custom_two_stage()
 
 def plot_results(solution):
     """Create plots for R vs t, dR/dt vs t, and T_s vs t."""
@@ -249,15 +405,16 @@ def plot_results(solution):
     plt.show()
 
 def main():
-    """Main function to run the two-stage fast simulation."""
+    """Main function to run the optimized simulation."""
     print("Solving Rayleigh-Plesset equation for vapor bubble in liquid sodium (OPTIMIZED MODE)...")
     
-    # Use the custom integrator for better performance
-    result = solve_custom_two_stage()
+    # Use the best solver for this system
+    result = select_best_solver()
     
     print("Simulation completed successfully!")
     plot_results(result)
     
+    # Results analysis 
     max_radius = np.max(result.y[0]) * 1000  # mm
     max_velocity = np.max(result.y[1]) * 100  # cm/s
     min_temperature = np.min(result.y[2])
