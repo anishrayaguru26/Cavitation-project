@@ -142,27 +142,31 @@ def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
     """
     rho_l, k, D, L, p_inf, sigma, T_inf, rho_v = params
     
-    # Prevent division by zero
+    # Prevent division by zero and ensure numerical stability
     R = max(R, 1e-12)
     
-    # Get vapor pressure
-    ln_P = 11.9463 - 12633.73/T_s - 0.4672 * np.log(T_s)
+    # Get vapor pressure with temperature limits
+    T_s_bounded = max(min(T_s, T_MAX), T_MIN)
+    ln_P = 11.9463 - 12633.73/T_s_bounded - 0.4672 * np.log(T_s_bounded)
     p_v = np.exp(ln_P) * 1e6
     
-    # Calculate dynamic viscosity
-    mu = 2.8e-4
-    
-    # Surface tension pressure
+    # Surface tension pressure (with improved stability)
     p_surface = 2 * sigma / R
+    
+    # Dynamic viscosity (temperature dependent)
+    mu = 2.8e-4 * (T_s/1154.0)**0.5  # Scale with temperature
     
     # Viscous term
     p_viscous = 4 * mu * dR_dt / R
     
-    # Pressure difference
-    delta_p = p_v - p_inf - p_surface - p_viscous
+    # Pressure difference with stability limits
+    delta_p = np.clip(p_v - p_inf - p_surface - p_viscous, -1e7, 1e7)
     
-    # Acceleration terms
+    # Calculate acceleration terms
     R_ddot = (delta_p / (rho_l * R)) - (3 * dR_dt * dR_dt) / (2 * R)
+    
+    # Apply reasonable limits to acceleration
+    R_ddot = clip_value(R_ddot, -1e7, 1e7)
     
     return dR_dt, R_ddot
 
@@ -270,9 +274,15 @@ def rho_v(T):
 # ---------------------------------------------------------------------
 # 2. Initial Conditions
 # ---------------------------------------------------------------------
-R0 = 1e-6  # Initial radius of 1 micrometer (m)
+# Calculate critical radius from pressure balance
+P_v_init = p_v(T_LIQUID_INITIAL)  # Initial vapor pressure
+R_crit = 2 * SIGMA / (P_v_init - P_INF)  # Critical radius from Young-Laplace equation
+R0 = 1.1 * R_crit  # Start slightly above critical radius for stability
 V0 = 0.0  # m/s (Initially at rest)
 Ts0 = T_LIQUID_INITIAL # K
+
+print(f"Critical radius: {R_crit:.3e} m")
+print(f"Initial vapor pressure: {P_v_init/1e5:.3f} bar")
 
 # ---------------------------------------------------------------------
 # 3. Simulation Parameters
