@@ -288,7 +288,7 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
     T_s_history = np.zeros(n_points)
     
     # Set initial conditions
-    R[0] = R0 * (1 + 1e-6)  # Add tiny perturbation to initial radius
+    R[0] = R0 * (1 + 1e-8)  # Add tiny perturbation to initial radius
     dR_dt[0] = dR0_dt
     
     # Initialize history arrays
@@ -313,15 +313,28 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
             
             params = (rho_l, k, D, L, p_inf, sigma, T_inf, rho_v)
             
-            # Adaptive sub-stepping
-            R_current = max(R[i-1], 1e-12)
-            dR_dt_current = np.clip(dR_dt[i-1], -1e6, 1e6)
+            # Initialize current state variables
+            R_current = max(R[i-1], 1e-12)  # Ensure minimum radius
+            dR_dt_current = dR_dt[i-1]
             
+            # Get initial acceleration for adaptive timestepping
+            _, R_ddot = rayleigh_plesset_optimized(R_current, dR_dt_current, t, T_s, params)
+            
+            # Adaptive sub-stepping with improved numerical stability
             try:
-                substep_factor = abs(dR_dt_current) * dt / (0.1 * R_current)
-                n_substeps = max(1, min(1000, int(np.ceil(substep_factor))))
-            except (OverflowError, ValueError):
-                n_substeps = 100
+                # Calculate substeps based on both velocity and radius changes
+                vel_factor = abs(dR_dt_current) * dt / (0.01 * R_current)
+                acc_factor = abs(R_ddot) * dt * dt / (0.01 * R_current)
+                substep_factor = max(vel_factor, acc_factor)
+                
+                # Handle potential NaN or infinity
+                if np.isnan(substep_factor) or np.isinf(substep_factor):
+                    n_substeps = 1000  # Default to high resolution if calculation fails
+                else:
+                    n_substeps = max(1, min(5000, int(np.ceil(substep_factor))))
+            except:
+                # More robust fallback that avoids division by zero
+                n_substeps = 1000 if R_current < 1e-9 else 200  # More substeps for very small bubbles
             
             dt_sub = dt / n_substeps
             
@@ -363,8 +376,8 @@ if __name__ == "__main__":
     dR0_dt = 0  # Initial velocity
     
     # Create time points focused on the region of interest
-    t_start = 1e-10  # Start from 10⁻⁸ s to match paper
-    t_end = 1 # End at 10⁻¹ s to match paper
+    t_start = 1e-10  
+    t_end = 1 
     n_points = 2000 # Increased for smoother curves
     
     # Generate time points with more resolution in the growth region
