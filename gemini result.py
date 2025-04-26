@@ -3,6 +3,7 @@ import scipy.integrate as integrate
 import scipy.interpolate as interpolate
 import matplotlib.pyplot as plt
 from numba import jit
+from tqdm import tqdm
 
 # Temperature-dependent property functions
 @jit(nopython=True)
@@ -115,6 +116,78 @@ def get_vapor_density(T):
     log_rho = np.log(rho1) + (np.log(rho2) - np.log(rho1)) * (T - T1) / (T2 - T1)
     return np.exp(log_rho)
 
+# Add helper functions with JIT compilation
+@jit(nopython=True)
+def safe_divide(a, b, default=0.0):
+    """Safe division with error handling"""
+    try:
+        if abs(b) < 1e-15:
+            return default
+        result = a / b
+        if np.isfinite(result):
+            return result
+        return default
+    except:
+        return default
+
+@jit(nopython=True)
+def clip_value(x, min_val, max_val):
+    """Numba-compatible value clipping"""
+    return max(min_val, min(x, max_val))
+
+@jit(nopython=True)
+def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
+    """
+    Optimized Rayleigh-Plesset equation calculation
+    """
+    rho_l, k, D, L, p_inf, sigma, T_inf, rho_v = params
+    
+    # Prevent division by zero
+    R = max(R, 1e-12)
+    
+    # Get vapor pressure
+    ln_P = 11.9463 - 12633.73/T_s - 0.4672 * np.log(T_s)
+    p_v = np.exp(ln_P) * 1e6
+    
+    # Calculate dynamic viscosity
+    mu = 2.8e-4
+    
+    # Surface tension pressure
+    p_surface = 2 * sigma / R
+    
+    # Viscous term
+    p_viscous = 4 * mu * dR_dt / R
+    
+    # Pressure difference
+    delta_p = p_v - p_inf - p_surface - p_viscous
+    
+    # Acceleration terms
+    R_ddot = (delta_p / (rho_l * R)) - (3 * dR_dt * dR_dt) / (2 * R)
+    
+    return dR_dt, R_ddot
+
+@jit(nopython=True)
+def integrate_substeps(R_current, dR_dt_current, dt_sub, n_substeps, params, T_s):
+    """Optimized sub-step integration"""
+    for _ in range(n_substeps):
+        if not (np.isfinite(R_current) and R_current > 0):
+            R_current = 1e-12
+            dR_dt_current = 0.0
+        
+        dR_dt_new, R_ddot = rayleigh_plesset_optimized(R_current, dR_dt_current, 0.0, T_s, params)
+        
+        if not (np.isfinite(dR_dt_new) and np.isfinite(R_ddot)):
+            dR_dt_new = dR_dt_current
+            R_ddot = 0.0
+        
+        # Use clip_value instead of np.clip
+        dR_dt_new = clip_value(dR_dt_new, -1e6, 1e6)
+        R_new = max(1e-12, R_current + dt_sub * dR_dt_new)
+        dR_dt_current = clip_value(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
+        R_current = R_new
+        
+    return R_current, dR_dt_current
+
 # ---------------------------------------------------------------------
 # 1. Define Physical Properties for Liquid Sodium (PLACEHOLDER VALUES)
 #    These MUST be replaced with accurate, potentially temperature-dependent
@@ -154,28 +227,8 @@ Ts0 = T_LIQUID_INITIAL # K
 # ---------------------------------------------------------------------
 t_start = 1e-10
 t_end = 1.0  # s
-dt = (t_end - t_start) / 10000  # Adjust number of steps for smooth results
+dt = (t_end - t_start) / 1000  # Reduce steps from 10000 to 1000 
 n_steps = int((t_end - t_start) / dt)
-
-# History storage with pre-allocated arrays for better performance
-t_history = [t_start]
-R_history = [R0]
-V_history = [V0]
-Ts_history = [Ts0]
-
-# Add helper function for numerical stability
-@jit(nopython=True)
-def safe_divide(a, b, default=0.0):
-    """Safe division with error handling"""
-    try:
-        if abs(b) < 1e-15:
-            return default
-        result = a / b
-        if np.isfinite(result):
-            return result
-        return default
-    except:
-        return default
 
 def calculate_dVdt(R, V, Ts):
     """Calculates dV/dt = d²R/dt² from Rayleigh-Plesset with improved stability."""
@@ -194,98 +247,64 @@ def calculate_dVdt(R, V, Ts):
 
 def calculate_Ts_integral_term(t_hist, R_hist, Ts_hist, current_t):
     """
-    Numerically estimates the integral term in the Ts equation with improved stability
+    Vectorized calculation of the integral term in the Ts equation
     """
     if len(t_hist) < 3:
         return 0.0
 
     try:
-        # Convert lists to numpy arrays with error checking
-        t_arr = np.array(t_hist, dtype=np.float64)
-        R_arr = np.array(R_hist, dtype=np.float64)
-        Ts_arr = np.array(Ts_hist, dtype=np.float64)
+        # Convert to numpy arrays once
+        t_arr = np.asarray(t_hist, dtype=np.float64)
+        R_arr = np.maximum(np.asarray(R_hist, dtype=np.float64), 1e-12)
+        Ts_arr = np.asarray(Ts_hist, dtype=np.float64)
         
-        # Ensure minimum positive values for stability
-        R_arr = np.maximum(R_arr, 1e-12)
+        # Vectorized calculation of ρv
+        rho_v_hist = np.vectorize(rho_v)(Ts_arr)
         
-        # Calculate ρv with error handling
-        rho_v_hist = np.array([max(rho_v(T), 1e-12) for T in Ts_arr])
-        
-        # Calculate R³ρv with stability checks
+        # Vectorized R³ρv calculation
         R_cubed = R_arr**3
         integrand_part1_base = R_cubed * rho_v_hist
         
-        # Calculate derivative with error handling
-        if len(t_arr) > 1:
-            try:
-                deriv_term = np.gradient(integrand_part1_base, t_arr, edge_order=1)
-            except:
-                # Fallback to forward differences if gradient fails
-                deriv_term = np.zeros_like(t_arr)
-                dt = np.diff(t_arr)
-                deriv_term[1:] = np.diff(integrand_part1_base) / dt
-                deriv_term[0] = deriv_term[1]
-        else:
+        # Vectorized derivative calculation
+        deriv_term = np.gradient(integrand_part1_base, t_arr, edge_order=1)
+        
+        # Pre-compute R⁴ for all points
+        R4_values = R_arr**4
+        
+        # Vectorized inner integral calculation using cumulative trapezoid
+        def compute_inner_integral(t_val):
+            mask = (t_arr <= t_val)
+            if not np.any(mask):
+                return 0.0
+            integral = np.trapz(R4_values[mask], t_arr[mask])
+            return max(integral, 1e-30)
+        
+        # Compute inner integral for current time
+        inner_integral = compute_inner_integral(current_t)
+        if inner_integral <= 1e-30:
             return 0.0
             
-        # Improved interpolation with bounds checking
-        if len(t_arr) > 1:
-            try:
-                interp_R = interpolate.interp1d(t_arr, R_arr, kind='linear', 
-                                              bounds_error=False, fill_value=(R_arr[0], R_arr[-1]))
-            except:
-                def interp_R(t_val):
-                    return R_arr[0]
-        else:
-            def interp_R(t_val):
-                return R_arr[0]
-                
-        # Inner integral calculation with improved stability
-        def inner_integral_sqrt_inv(x_val, t_now):
-            if x_val >= t_now - 1e-15:
-                return 0.0
-            try:
-                integral_R4, err = integrate.quad(
-                    lambda y: max(interp_R(y), 1e-12)**4,
-                    x_val, t_now,
-                    limit=50,
-                    epsabs=1e-6,
-                    epsrel=1e-6
-                )
-                if integral_R4 <= 1e-30:
-                    return 0.0
-                return 1.0 / np.sqrt(max(integral_R4, 1e-30))
-            except:
-                return 0.0
-                
-        # Outer integral with improved stability
-        try:
-            integral_val, err = integrate.quad(
-                lambda x: L_VAP * safe_divide(
-                    deriv_term[np.searchsorted(t_arr, x) - 1] * inner_integral_sqrt_inv(x, current_t),
-                    1.0
-                ),
-                t_arr[0],
-                current_t,
-                limit=50,
-                epsabs=1e-6,
-                epsrel=1e-6
-            )
-            
-            # Ensure result is finite and reasonable
-            if not np.isfinite(integral_val):
-                return 0.0
-            return np.clip(integral_val, -1e10, 1e10)
-            
-        except Exception as e:
-            return 0.0
+        # Final integral calculation
+        integral_val = L_VAP * deriv_term[-1] / np.sqrt(inner_integral)
+        
+        return np.clip(integral_val, -1e10, 1e10)
             
     except Exception as e:
         return 0.0
 
-# ---------------------------------------------------------------------
-# 5. Time Stepping Loop
-# ---------------------------------------------------------------------
+# Pre-allocate arrays for history storage at start
+t_history = np.zeros(n_steps + 1)
+R_history = np.zeros(n_steps + 1)
+V_history = np.zeros(n_steps + 1)
+Ts_history = np.zeros(n_steps + 1)
+
+# Initialize first elements
+t_history[0] = t_start
+R_history[0] = R0
+V_history[0] = V0
+Ts_history[0] = Ts0
+
+# Main time stepping loop
 R = R0
 V = V0
 Ts = Ts0
@@ -294,47 +313,60 @@ t = t_start
 print(f"Starting simulation: R0={R0:.3e} m, Ts0={Ts0:.1f} K, P_inf={P_INF/1e5:.2f} bar")
 print(f"Initial p_v(Ts0)={p_v(Ts0)/1e5:.3f} bar")
 
-for i in range(n_steps):
+for i in tqdm(range(1, n_steps + 1), desc="Simulating bubble dynamics", unit="step"):
     if R <= 0:
-        print(f"Bubble collapsed at t={t:.3e} s")
+        print(f"\nBubble collapsed at t={t:.3e} s")
         break
-
+        
+    t = t_history[i] = t_start + i * dt
+    
     # Calculate derivatives at current state
     dVdt = calculate_dVdt(R, V, Ts)
-    # dRdt = V # Already have V
-
-    # --- Update R and V (Forward Euler - consider RK4 for better stability) ---
+    
+    # Update R and V with Forward Euler
     R_new = R + V * dt
     V_new = V + dVdt * dt
-
-    # --- Update Ts ---
-    # This is the expensive part - requires history
-    integral_term_val = calculate_Ts_integral_term(t_history, R_history, Ts_history, t)
-
-    # Check for issues in integral calculation
+    
+    # Calculate surface temperature
+    integral_term_val = calculate_Ts_integral_term(t_history[:i], R_history[:i], Ts_history[:i], t)
+    
     if np.isnan(integral_term_val) or np.isinf(integral_term_val):
-         print(f"Warning: Invalid integral term ({integral_term_val:.3e}) at t={t:.3e} s. Holding Ts constant.")
-         Ts_new = Ts # Keep previous value if calculation fails
+        tqdm.write(f"Warning: Invalid integral term ({integral_term_val:.3e}) at t={t:.3e} s. Holding Ts constant.")
+        Ts_new = Ts
     else:
-         Ts_new = T_INF - (1.0 / (3.0 * K_L)) * np.sqrt(D_L / np.pi) * integral_term_val
-
-    # Update time and state
-    t += dt
+        Ts_new = T_INF - (1.0 / (3.0 * K_L)) * np.sqrt(D_L / np.pi) * integral_term_val
+    
+    # Update temperature-dependent properties
+    rho_l = get_liquid_density(Ts_new)
+    rho_v_val = get_vapor_density(Ts_new)
+    L = get_latent_heat(Ts_new)
+    sigma = get_surface_tension(Ts_new)
+    
+    params = (rho_l, K_L, D_L, L, P_INF, sigma, T_INF, rho_v_val)
+    
+    # Adaptive sub-stepping
+    vel_factor = abs(V_new) * dt / (0.01 * max(R_new, 1e-12))
+    acc_factor = abs(dVdt) * dt * dt / (0.01 * max(R_new, 1e-12))
+    n_substeps = max(1, min(1000, int(np.ceil(max(vel_factor, acc_factor)))))
+    dt_sub = dt / n_substeps
+    
+    # Perform sub-step integration
+    R_new, V_new = integrate_substeps(R_new, V_new, dt_sub, n_substeps, params, Ts_new)
+    
+    # Update state
     R = R_new
     V = V_new
     Ts = Ts_new
-
+    
     # Store history
-    t_history.append(t)
-    R_history.append(R)
-    V_history.append(V)
-    Ts_history.append(Ts)
+    R_history[i] = R
+    V_history[i] = V
+    Ts_history[i] = Ts
+    
+    if (i + 1) % (n_steps // 20) == 0:
+        tqdm.write(f"t={t:.3e} s, R={R:.3e} m, V={V:.2f} m/s, Ts={Ts:.1f} K")
 
-    if (i + 1) % (n_steps // 20) == 0: # Print progress
-        print(f"t={t:.3e} s, R={R:.3e} m, V={V:.2f} m/s, Ts={Ts:.1f} K, IntegralTerm={integral_term_val:.3e}")
-
-
-print("Simulation finished.")
+print("\nSimulation finished.")
 
 # ---------------------------------------------------------------------
 # 6. Plotting Results

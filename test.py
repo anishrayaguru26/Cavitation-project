@@ -7,9 +7,9 @@ k = 71  # Thermal conductivity of liquid sodium (W/m·K)
 p_w = 850  # Density of liquid sodium (kg/m³)
 mu = 2.29e-4  # Dynamic viscosity of liquid sodium (Pa·s)
 T_b = 700  # Base temperature for liquid sodium (K)
-R_0 = 4e-6  # Initial bubble radius (m)
+R_0 = 1e-6  # Initial bubble radius 1 micrometer (m)
 T_s_initial = T_b + 50  # Initial surface temperature of the bubble (K)
-time_max = 1e-1  # Maximum simulation time (s)
+time_max = 1.0  # Maximum simulation time (s)
 
 # Initial conditions
 R = R_0  # Initial bubble radius
@@ -17,7 +17,7 @@ T_s = T_s_initial  # Initial temperature at the bubble surface
 dR_dt = 0  # Initial rate of radius change
 
 # Time parameters - using logarithmic time steps for better resolution
-times = np.logspace(-6, -1, 1000)  # From 1μs to 0.1s
+times = np.logspace(-10, 0, 1000)  # From 1e-10s to 1s
 dt = np.diff(times)[0]  # Initial time step
 
 # Arrays to store values over time
