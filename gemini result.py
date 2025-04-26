@@ -136,42 +136,73 @@ def clip_value(x, min_val, max_val):
     return max(min_val, min(x, max_val))
 
 @jit(nopython=True)
+def system_derivatives(R, V, T_s, params):
+    """Calculate derivatives for both R and V"""
+    dRdt = V
+    _, dVdt = rayleigh_plesset_optimized(R, V, 0.0, T_s, params)
+    return dRdt, dVdt
+
+@jit(nopython=True)
+def energy_check(R, V, T_s, params):
+    """Check energy conservation"""
+    rho_l, k, D, L, p_inf, sigma, T_inf, rho_v = params
+    
+    # Kinetic energy
+    E_k = 2 * np.pi * rho_l * R**3 * V**2
+    
+    # Surface energy
+    E_s = 4 * np.pi * R**2 * sigma
+    
+    # Thermal energy
+    E_t = 4/3 * np.pi * R**3 * rho_v * L * (T_s - T_inf) / T_s
+    
+    return E_k + E_s + E_t
+
+@jit(nopython=True)
 def rk4_step(R, V, T_s, dt, params):
     """
-    4th order Runge-Kutta integration with proper coupling
+    4th order Runge-Kutta with energy conservation
     """
-    # k1 calculations
-    k1_R = V
-    _, k1_V = rayleigh_plesset_optimized(R, V, 0.0, T_s, params)
+    # Store initial energy
+    E_init = energy_check(R, V, T_s, params)
     
-    # k2 calculations
+    # Standard RK4 steps
+    k1_R, k1_V = system_derivatives(R, V, T_s, params)
+    
     R2 = R + 0.5 * dt * k1_R
     V2 = V + 0.5 * dt * k1_V
-    _, k2_V = rayleigh_plesset_optimized(R2, V2, dt/2, T_s, params)
-    k2_R = V2
+    k2_R, k2_V = system_derivatives(R2, V2, T_s, params)
     
-    # k3 calculations
     R3 = R + 0.5 * dt * k2_R
     V3 = V + 0.5 * dt * k2_V
-    _, k3_V = rayleigh_plesset_optimized(R3, V3, dt/2, T_s, params)
-    k3_R = V3
+    k3_R, k3_V = system_derivatives(R3, V3, T_s, params)
     
-    # k4 calculations
     R4 = R + dt * k3_R
     V4 = V + dt * k3_V
-    _, k4_V = rayleigh_plesset_optimized(R4, V4, dt, T_s, params)
-    k4_R = V4
+    k4_R, k4_V = system_derivatives(R4, V4, T_s, params)
     
-    # Final update with proper weighting
+    # Update with energy check
     R_new = R + (dt/6.0) * (k1_R + 2*k2_R + 2*k3_R + k4_R)
     V_new = V + (dt/6.0) * (k1_V + 2*k2_V + 2*k3_V + k4_V)
+    
+    # Check energy conservation
+    E_final = energy_check(R_new, V_new, T_s, params)
+    
+    # Adjust velocity to conserve energy if needed
+    if abs(E_final - E_init) > 0.1 * abs(E_init):
+        scaling = np.sqrt(abs(E_init/E_final))
+        V_new *= scaling
+    
+    # Apply physical bounds
+    R_new = max(R_new, 1e-12)
+    V_new = clip_value(V_new, -1e6, 1e6)
     
     return R_new, V_new
 
 @jit(nopython=True)
-def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
+def rayleigh_plesset_optimized(R, V, t, T_s, params):
     """
-    Exact Rayleigh-Plesset equation with inertial effects
+    Rayleigh-Plesset equation with improved stability
     """
     rho_l, k, D, L, p_inf, sigma, T_inf, rho_v = params
     
@@ -179,26 +210,26 @@ def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
     R = max(R, 1e-12)
     T_s = clip_value(T_s, T_MIN, T_MAX)
     
-    # Vapor pressure with superheat effect
+    # Vapor pressure calculation
     p_v = get_vapor_pressure(T_s)
     
-    # Thermal pressure term (from kinetic theory)
+    # Inertial and thermal effects
     p_thermal = rho_v * L * (T_s - T_inf) / T_s
     
-    # Surface tension with dynamic effects
-    p_surface = 2 * sigma / R - sigma * dR_dt / (R * R)
+    # Surface tension (with curvature effects)
+    p_surface = 2 * sigma / R
     
-    # Viscous effects with temperature dependence
+    # Viscous effects
     mu = 2.29e-4 * (T_s/1154.0)**0.5
-    p_viscous = 4 * mu * dR_dt / R
+    p_viscous = 4 * mu * V / R
     
     # Total pressure difference
     delta_p = p_v + p_thermal - p_inf - p_surface - p_viscous
     
-    # Full Rayleigh-Plesset equation with all terms
-    R_ddot = (delta_p / (rho_l * R)) - (3 * dR_dt * dR_dt) / (2 * R) - (4 * mu * dR_dt) / (rho_l * R * R)
+    # Acceleration term from Rayleigh-Plesset
+    dVdt = delta_p/(rho_l * R) - 1.5 * (V * V)/R
     
-    return dR_dt, R_ddot
+    return V, dVdt
 
 def calculate_temperature_exact(t, R_hist, dRdt_hist, t_hist, T_prev):
     """
@@ -238,11 +269,12 @@ T_MIN = 300.0  # K (minimum reasonable temperature)
 T_MAX = 2500.0  # K (close to critical point of sodium)
 
 # ---------------------------------------------------------------------
-# 1. Physical Properties with improved temperature dependence
+# 1. Physical Constants and Initial Conditions
 # ---------------------------------------------------------------------
-P_INF = 0.5e5  # Pa (0.5 bar)
-T_SUPERHEAT = 340.0 # K
-T_INF = 881.0 + 273 # K (Bulk temperature)
+P_ATM = 1.01325e5  # Atmospheric pressure (Pa)
+P_INF = 0.5 * P_ATM  # Ambient pressure (0.5 bar)
+T_SUPERHEAT = 340.0  # K
+T_INF = 881.0 + 273.15  # K (Bulk temperature)
 T_LIQUID_INITIAL = T_INF + T_SUPERHEAT
 
 # Improved physical properties
@@ -260,53 +292,74 @@ def p_v(T):
 def rho_v(T):
     return get_vapor_density(T)
 
-# ---------------------------------------------------------------------
-# 2. Initial Conditions
-# ---------------------------------------------------------------------
-# Update initial conditions for better stability
-R0 = 2e-6  # Initial radius (2 micrometers)
-V0 = 1e-3  # Small initial velocity to break symmetry
-Ts0 = T_LIQUID_INITIAL  # Start at initial liquid temperature
+# Calculate initial conditions from pressure balance
+p_v_init = p_v(T_LIQUID_INITIAL)
+p_thermal_init = rho_v(T_LIQUID_INITIAL) * L_VAP * T_SUPERHEAT / T_LIQUID_INITIAL
+p_total_init = p_v_init + p_thermal_init
+R_crit = 2 * SIGMA / (p_total_init - P_INF)
 
+# Start with larger radius and small positive velocity
+R0 = 2.0 * R_crit  # Twice the critical radius
+V0 = 0.1  # Initial velocity (m/s)
+Ts0 = T_LIQUID_INITIAL
+
+print(f"Critical radius: {R_crit:.3e} m")
 print(f"Initial radius: {R0:.3e} m")
-print(f"Initial velocity: {V0:.3e} m/s")
-print(f"Initial temperature: {Ts0:.1f} K")
+print(f"Initial vapor pressure: {p_v_init/P_ATM:.2f} atm")
+print(f"Initial thermal pressure: {p_thermal_init/P_ATM:.2f} atm")
+print(f"Total initial pressure: {p_total_init/P_ATM:.2f} atm")
 
 # ---------------------------------------------------------------------
-# 3. Simulation Parameters
+# 3. Simulation Parameters with adaptive time stepping
 # ---------------------------------------------------------------------
-t_start = 1e-10  # Start time (s)
-t_end = 1.0      # End time (s)
-n_steps = 10000  # Increase number of steps for better accuracy
-dt = (t_end - t_start) / n_steps
+t_start = 1e-15  # Much smaller initial time
+t_end = 1.0
+n_steps = 10000
+base_dt = (t_end - t_start) / n_steps
 
-# Pre-allocate larger arrays for history storage
-t_history = np.zeros(n_steps + 1)
-R_history = np.zeros(n_steps + 1)
-V_history = np.zeros(n_steps + 1)
-Ts_history = np.zeros(n_steps + 1)
+# Function to calculate adaptive timestep
+@jit(nopython=True)
+def get_adaptive_dt(t, R, V, base_dt):
+    """Calculate adaptive timestep based on current state"""
+    # Characteristic timescales
+    tau_inertial = np.sqrt(R/abs(V)) if abs(V) > 1e-10 else base_dt
+    tau_thermal = R*R/D_L
+    
+    # Use smallest relevant timescale
+    dt = min(base_dt, tau_inertial/10, tau_thermal/10)
+    
+    # Ensure dt doesn't get too small or too large
+    return clip_value(dt, 1e-15, base_dt)
 
-# Initialize first elements with exact values
+# Pre-allocate arrays with adaptive size
+max_steps = int(1.5 * n_steps)  # Allow for extra steps due to adaptive dt
+t_history = np.zeros(max_steps)
+R_history = np.zeros(max_steps)
+V_history = np.zeros(max_steps)
+Ts_history = np.zeros(max_steps)
+
+# Initialize first elements
 t_history[0] = t_start
 R_history[0] = R0
 V_history[0] = V0
 Ts_history[0] = Ts0
 
-# Main time stepping loop
+# Main time stepping loop with adaptive dt
 R = R0
 V = V0
 Ts = Ts0
 t = t_start
+i = 0
 
-print(f"Starting simulation: R0={R0:.3e} m, Ts0={Ts0:.1f} K, P_inf={P_INF/1e5:.2f} bar")
+print(f"\nStarting simulation: R0={R0:.3e} m, Ts0={Ts0:.1f} K, P_inf={P_INF/1e5:.2f} bar")
 print(f"Initial p_v(Ts0)={p_v(Ts0)/1e5:.3f} bar")
 
-for i in tqdm(range(1, n_steps + 1), desc="Simulating bubble dynamics", unit="step"):
+for i in tqdm(range(1, max_steps), desc="Simulating bubble dynamics", unit="step"):
     if R <= 0:
         print(f"\nBubble collapsed at t={t:.3e} s")
         break
         
-    t = t_history[i] = t_start + i * dt
+    t = t_history[i] = t_start + i * base_dt
     
     # Update temperature first
     Ts = calculate_temperature_exact(t, R_history[:i], V_history[:i], t_history[:i], Ts)
@@ -320,7 +373,7 @@ for i in tqdm(range(1, n_steps + 1), desc="Simulating bubble dynamics", unit="st
     params = (rho_l, K_L, D_L, L, P_INF, sigma, T_INF, rho_v_val)
     
     # RK4 integration for radius and velocity
-    R_new, V_new = rk4_step(R, V, Ts, dt, params)
+    R_new, V_new = rk4_step(R, V, Ts, base_dt, params)
     
     # Update state
     R = max(R_new, 1e-12)  # Ensure positive radius
@@ -339,10 +392,10 @@ print("\nSimulation finished.")
 # ---------------------------------------------------------------------
 # 6. Plotting Results
 # ---------------------------------------------------------------------
-t_history = np.array(t_history)
-R_history = np.array(R_history)
-V_history = np.array(V_history)
-Ts_history = np.array(Ts_history)
+t_history = np.array(t_history[:i+1])
+R_history = np.array(R_history[:i+1])
+V_history = np.array(V_history[:i+1])
+Ts_history = np.array(Ts_history[:i+1])
 
 fig, axs = plt.subplots(3, 1, figsize=(12, 15))
 
