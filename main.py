@@ -168,6 +168,21 @@ def get_surface_tension(T):
     return max(0.0, sigma)
 
 @jit(nopython=True)
+def get_vapor_pressure(T):
+    """
+    Calculate vapor pressure (Pa) for sodium using the formula:
+    ln P = 11.9463 - 12633.73/T - 0.4672 ln T
+    where P is in MPa and T is in K
+    """
+    # Calculate ln(P) where P is in MPa
+    ln_P = 11.9463 - 12633.73/T - 0.4672 * np.log(T)
+    
+    # Convert from ln(MPa) to Pa
+    P = np.exp(ln_P) * 1e6  # Convert MPa to Pa
+    
+    return P
+
+@jit(nopython=True)
 def calculate_Ts_optimized(t, times, radii, T_inf, k, D, rho_v, superheat):
     """
     Calculate surface temperature T_s using the integral equation
@@ -212,21 +227,6 @@ def calculate_Ts_optimized(t, times, radii, T_inf, k, D, rho_v, superheat):
     T_s = T_inf - (1/(3*k)) * np.sqrt(D/np.pi) * integral_term
     
     return float(T_s)
-
-@jit(nopython=True)
-def get_vapor_pressure(T):
-    """
-    Calculate vapor pressure (Pa) for sodium using the formula:
-    ln P = 11.9463 - 12633.73/T - 0.4672 ln T
-    where P is in MPa and T is in K
-    """
-    # Calculate ln(P) where P is in MPa
-    ln_P = 11.9463 - 12633.73/T - 0.4672 * np.log(T)
-    
-    # Convert from ln(MPa) to Pa
-    P = np.exp(ln_P) * 1e6  # Convert MPa to Pa
-    
-    return P
 
 @jit(nopython=True)
 def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
