@@ -247,10 +247,10 @@ def calculate_dVdt(R, V, Ts):
 
 def calculate_Ts_integral_term(t_hist, R_hist, Ts_hist, current_t):
     """
-    Vectorized calculation of the integral term in the Ts equation
+    Vectorized calculation of the integral term in the Ts equation with improved stability
     """
     if len(t_hist) < 3:
-        return 0.0
+        return T_INF
 
     try:
         # Convert to numpy arrays once
@@ -258,39 +258,45 @@ def calculate_Ts_integral_term(t_hist, R_hist, Ts_hist, current_t):
         R_arr = np.maximum(np.asarray(R_hist, dtype=np.float64), 1e-12)
         Ts_arr = np.asarray(Ts_hist, dtype=np.float64)
         
-        # Vectorized calculation of ρv
-        rho_v_hist = np.vectorize(rho_v)(Ts_arr)
+        # Ensure temperature bounds for vapor density calculation
+        Ts_arr = np.clip(Ts_arr, T_INF * 0.5, T_INF * 1.5)
         
-        # Vectorized R³ρv calculation
-        R_cubed = R_arr**3
+        # Vectorized calculation of ρv with stability checks
+        rho_v_hist = np.maximum(np.vectorize(rho_v)(Ts_arr), 1e-12)
+        
+        # Vectorized R³ρv calculation with stability bounds
+        R_cubed = np.clip(R_arr**3, 1e-36, 1e6)
         integrand_part1_base = R_cubed * rho_v_hist
         
-        # Vectorized derivative calculation
-        deriv_term = np.gradient(integrand_part1_base, t_arr, edge_order=1)
+        # Vectorized derivative calculation with stability checks
+        try:
+            deriv_term = np.gradient(integrand_part1_base, t_arr, edge_order=1)
+        except:
+            return T_INF
         
-        # Pre-compute R⁴ for all points
-        R4_values = R_arr**4
+        # Pre-compute R⁴ for all points with bounds
+        R4_values = np.clip(R_arr**4, 1e-48, 1e8)
         
-        # Vectorized inner integral calculation using cumulative trapezoid
-        def compute_inner_integral(t_val):
-            mask = (t_arr <= t_val)
-            if not np.any(mask):
-                return 0.0
-            integral = np.trapz(R4_values[mask], t_arr[mask])
-            return max(integral, 1e-30)
-        
-        # Compute inner integral for current time
-        inner_integral = compute_inner_integral(current_t)
-        if inner_integral <= 1e-30:
-            return 0.0
+        # Modified inner integral calculation with stability
+        mask = (t_arr <= current_t)
+        if not np.any(mask):
+            return T_INF
             
-        # Final integral calculation
-        integral_val = L_VAP * deriv_term[-1] / np.sqrt(inner_integral)
+        integral = np.trapz(R4_values[mask], t_arr[mask])
+        inner_integral = max(integral, 1e-30)
+            
+        # Final integral calculation with stability bounds
+        integral_val = L_VAP * safe_divide(deriv_term[-1], np.sqrt(inner_integral), 0.0)
         
-        return np.clip(integral_val, -1e10, 1e10)
+        # Calculate temperature with strict bounds
+        delta_T = (1.0 / (3.0 * K_L)) * np.sqrt(D_L / np.pi) * integral_val
+        T_s = T_INF - delta_T
+        
+        # Ensure temperature stays within physical bounds
+        return np.clip(T_s, T_INF * 0.5, T_INF * 1.5)
             
     except Exception as e:
-        return 0.0
+        return T_INF
 
 # Pre-allocate arrays for history storage at start
 t_history = np.zeros(n_steps + 1)
@@ -378,24 +384,34 @@ Ts_history = np.array(Ts_history)
 
 fig, axs = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
 
-axs[0].plot(t_history * 1000, R_history * 1000)
-axs[0].set_ylabel("Radius R (mm)")
-axs[0].grid(True)
+# Plot 1: Radius (log-log scale)
+axs[0].loglog(t_history, R_history)
+axs[0].set_ylabel("Radius [m]")
+axs[0].grid(True, which='both', linestyle='-', alpha=0.6)
+axs[0].grid(True, which='minor', linestyle=':', alpha=0.3)
+axs[0].set_title('Bubble Radius Evolution')
 
-axs[1].plot(t_history * 1000, V_history)
-axs[1].set_ylabel("Velocity V (m/s)")
-axs[1].grid(True)
+# Plot 2: Velocity (log-log scale with absolute value)
+axs[1].loglog(t_history, np.abs(V_history) + 1e-10)  # Add small value to handle zero velocity
+axs[1].set_ylabel("Velocity [m/s]")
+axs[1].grid(True, which='both', linestyle='-', alpha=0.6)
+axs[1].grid(True, which='minor', linestyle=':', alpha=0.3)
+axs[1].set_title('Bubble Wall Velocity')
 
-axs[2].plot(t_history * 1000, Ts_history)
-axs[2].set_ylabel("Surface Temp Ts (K)")
-axs[2].set_xlabel("Time (ms)")
-axs[2].grid(True)
-# Add reference lines if useful (e.g., T_INF, T_LIQUID_INITIAL)
+# Plot 3: Temperature (linear scale with log time)
+axs[2].semilogx(t_history, Ts_history, 'r-', linewidth=2)
+axs[2].set_ylabel("Surface Temperature [K]")
+axs[2].set_xlabel("Time [s]")
+axs[2].grid(True, which='both', linestyle='-', alpha=0.6)
+axs[2].grid(True, which='minor', linestyle=':', alpha=0.3)
+axs[2].set_title('Surface Temperature Evolution')
+
+# Add reference lines for temperature plot
 axs[2].axhline(T_LIQUID_INITIAL, color='r', linestyle='--', label=f'T_initial ({T_LIQUID_INITIAL:.1f} K)')
 axs[2].axhline(T_INF, color='g', linestyle='--', label=f'T_bulk ({T_INF:.1f} K)')
 axs[2].legend()
 
-
+# Adjust layout and add overall title
 plt.suptitle(f"Bubble Dynamics (Na, {P_INF/1e5:.1f} bar, {T_SUPERHEAT:.0f} K Superheat)")
-plt.tight_layout(rect=[0, 0.03, 1, 0.97]) # Adjust layout to prevent title overlap
+plt.tight_layout(rect=[0, 0.03, 1, 0.97])
 plt.show()
