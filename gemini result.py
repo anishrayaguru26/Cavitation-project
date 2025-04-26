@@ -285,20 +285,21 @@ def calculate_temperature_plesset_zwick(t, R_hist, dRdt_hist, t_hist, T_prev):
 # ---------------------------------------------------------------------
 # 1. Physical Constants and Initial Conditions
 # ---------------------------------------------------------------------
-# Constants from Plesset paper Case 1
-T_SUPERHEAT = 340.1  # K
-T_INF = 1083.6  # K (bulk temperature)
+# Update initial conditions
+R0 = 2.5e-5  # m (from paper Case 1)
+V0 = 0.0  # Start from rest
+T_SUPERHEAT = 340.1  # K (Case 1)
+T_INF = 1083.6  # K (Case 1)
 T_LIQUID_INITIAL = T_INF + T_SUPERHEAT
-P_INF = 1.253e5  # Pa
-P_ATM = 1.01325e5  # Pa
+P_INF = 1.253e5  # Pa (Case 1)
 
-# Physical properties (from paper)
+# Physical properties matching paper
 K_L = 71.7  # W/(m·K)
 CP_L = 1380.0  # J/(kg·K)
 RHO_L = 927.0  # kg/m³
 SIGMA = 0.2  # N/m
-D_L = K_L / (RHO_L * CP_L)  # Thermal diffusivity
-L_VAP = 4.1e6  # J/kg (at mean temperature)
+D_L = K_L / (RHO_L * CP_L)
+L_VAP = 4.1e6  # J/kg
 
 # Temperature bounds
 T_MIN = T_INF - 50  # Lower bound
@@ -311,8 +312,6 @@ delta_p = p_v_init - P_INF  # Initial pressure difference
 
 # Critical radius from mechanical equilibrium
 R_crit = 2 * SIGMA / max(delta_p, 1e3)  # Ensure positive value
-R0 = 2.0 * R_crit  # Start with twice critical radius
-V0 = 0.01  # Small initial velocity
 
 # Time stepping parameters
 t_start = 1e-8  # Initial time (s)
@@ -409,44 +408,37 @@ R_plot = R_history * 100  # Convert m to cm
 V_plot = V_history * 100  # Convert m/s to cm/s
 T_plot = Ts_history  # Kelvin
 
-# Create figure with golden ratio
-plt.style.use('seaborn-darkgrid')
-fig = plt.figure(figsize=(8, 13))
+# Create figure without seaborn dependency
+plt.figure(figsize=(8, 13))
 
 # Plot 1: Radius vs time (log-log)
-ax1 = plt.subplot(311)
-ax1.loglog(t_plot, R_plot, 'k-', linewidth=1.5)
-ax1.set_xlim(1e-8, 1)
-ax1.set_ylim(1e-4, 1e-1)
-ax1.set_ylabel('R (cm)')
-ax1.grid(True, which='both', linestyle='-', alpha=0.2)
-ax1.grid(True, which='minor', linestyle=':', alpha=0.1)
-ax1.set_xticklabels([])
+plt.subplot(311)
+plt.loglog(t_plot, R_plot, 'k-', linewidth=1.5)
+plt.xlim(1e-8, 1)
+plt.ylim(1e-4, 1e-1)
+plt.ylabel('R (cm)')
+plt.grid(True, which='both', alpha=0.2)
+plt.grid(True, which='minor', linestyle=':', alpha=0.1)
 
 # Plot 2: Temperature vs time (log-x, linear-y)
-ax2 = plt.subplot(312)
-ax2.semilogx(t_plot, T_plot, 'k-', linewidth=1.5)
-ax2.set_xlim(1e-7, 1)
-ax2.set_ylim(1100, 1500)
-ax2.set_ylabel('T$_s$ (K)')
-ax2.grid(True, which='both', linestyle='-', alpha=0.2)
-ax2.grid(True, which='minor', linestyle=':', alpha=0.1)
-ax2.set_xticklabels([])
+plt.subplot(312)
+plt.semilogx(t_plot, T_plot, 'k-', linewidth=1.5)
+plt.xlim(1e-7, 1)
+plt.ylim(1100, 1500)
+plt.ylabel('T$_s$ (K)')
+plt.grid(True, which='both', alpha=0.2)
+plt.grid(True, which='minor', linestyle=':', alpha=0.1)
 
 # Plot 3: Velocity vs time (log-log)
-ax3 = plt.subplot(313)
-ax3.loglog(t_plot, np.abs(V_plot), 'k-', linewidth=1.5)
-ax3.set_xlim(1e-8, 1e-1)
-ax3.set_ylim(1e1, 1e4)
-ax3.set_xlabel('t (s)')
-ax3.set_ylabel('|dR/dt| (cm/s)')
-ax3.grid(True, which='both', linestyle='-', alpha=0.2)
-ax3.grid(True, which='minor', linestyle=':', alpha=0.1)
+plt.subplot(313)
+plt.loglog(t_plot, np.abs(V_plot), 'k-', linewidth=1.5)
+plt.xlim(1e-8, 1e-1)
+plt.ylim(1e1, 1e4)
+plt.xlabel('t (s)')
+plt.ylabel('|dR/dt| (cm/s)')
+plt.grid(True, which='both', alpha=0.2)
+plt.grid(True, which='minor', linestyle=':', alpha=0.1)
 
-# Common formatting
-for ax in [ax1, ax2, ax3]:
-    ax.tick_params(which='both', direction='in', top=True, right=True)
-    
 plt.suptitle('Vapor Bubble Growth in Superheated Sodium\n' + 
              f'(T$_∞$ = {T_INF:.1f} K, ΔT = {T_SUPERHEAT:.1f} K)', y=0.95)
 plt.tight_layout()
