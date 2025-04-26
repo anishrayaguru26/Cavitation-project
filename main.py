@@ -356,12 +356,7 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
     return t_span, R, dR_dt, T_s_history
 
 if __name__ == "__main__":
-    print("Starting bubble dynamics simulation...")
-    print("----------------------------------------")
-    print("Initial conditions (Case 3):")
-    print("Initial radius (R0): 100 μm")
-    print("Initial velocity (dR0/dt): 0 m/s")
-    print("----------------------------------------")
+
     
     # Initial conditions from Case 3
     R0 = 1e-6  # Initial radius (1 μm) - can be found by clausius clapeyron eq
@@ -380,6 +375,13 @@ if __name__ == "__main__":
     
     # Convert velocity to cm/s for plotting
     dR_dt_cms = dR_dt * 100  # Convert m/s to cm/s
+    
+    print("Starting bubble dynamics simulation...")
+    print("----------------------------------------")
+    print("Initial conditions:")
+    print(f"Initial radius (R0): {R0 * 1e6} μm")
+    print("Initial velocity (dR0/dt): 0 m/s")
+    print("----------------------------------------")
     
     # Plot results
     plt.figure(figsize=(12, 8))
