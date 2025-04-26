@@ -4,19 +4,27 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from time import sleep
 from numba import jit, float64, prange
+import os
+import sys
+
+@jit(nopython=True)
+def isfinite(x):
+    """Numba-compatible implementation of np.isfinite"""
+    return not (np.isinf(x) or np.isnan(x))
 
 @jit(nopython=True)
 def calculate_gradient(y, x):
     """
-    Calculate gradient using central differences for d/dx[R³ρᵥ(Ts)]
+    Calculate gradient using central differences with Numba optimization
     """
-    dy = np.zeros_like(y)
+    n = len(y)
+    dy = np.zeros(n)
     
     # Forward difference for first point
     dy[0] = (y[1] - y[0]) / (x[1] - x[0])
     
     # Central difference for interior points
-    for i in range(1, len(y)-1):
+    for i in range(1, n-1):
         dy[i] = (y[i+1] - y[i-1]) / (x[i+1] - x[i-1])
     
     # Backward difference for last point
@@ -27,15 +35,17 @@ def calculate_gradient(y, x):
 @jit(nopython=True)
 def calculate_inner_integral(times, radii, start_idx):
     """Optimized calculation of inner integral"""
-    y = times[start_idx:]
-    R_y = radii[start_idx:]
-    if len(R_y) > 1:
-        # Calculate R⁴
-        R4 = R_y**4
-        # Trapezoidal integration
-        dx = np.diff(y)
-        return np.sum(0.5 * dx * (R4[1:] + R4[:-1]))
-    return 0.0
+    n = len(times)
+    if start_idx >= n - 1:
+        return 0.0
+        
+    integral = 0.0
+    for i in range(start_idx + 1, n):
+        R4_avg = (radii[i]**4 + radii[i-1]**4) / 2
+        dt = times[i] - times[i-1]
+        integral += R4_avg * dt
+        
+    return max(integral, 1e-30)  # Ensure positive value
 
 @jit(nopython=True)
 def get_latent_heat(T):
@@ -185,50 +195,68 @@ def get_vapor_pressure(T):
 @jit(nopython=True)
 def calculate_Ts_optimized(t, times, radii, T_inf, k, D, rho_v, superheat):
     """
-    Calculate surface temperature T_s using the corrected integral equation
+    Calculate surface temperature T_s using the integral equation with improved stability
     """
     if len(times) < 2:
         return T_inf
     
-    # Calculate R³ρᵥ
-    R_cubed_rho_v = radii**3 * rho_v
+    # Ensure minimum radius values
+    n = len(radii)
+    radii_safe = np.zeros(n)
+    for i in range(n):
+        radii_safe[i] = max(radii[i], 1e-12)
     
-    # Calculate L(T_s) at each point (initial guess: T_inf)
-    L_values = np.array([get_latent_heat(T_inf) for _ in times])
+    # Calculate R³ρᵥ term with stability check
+    R_cubed_rho_v = np.zeros(n)
+    for i in range(n):
+        R_cubed_rho_v[i] = radii_safe[i]**3 * rho_v
     
-    # Form the product L * R³ * ρᵥ
-    L_R3_rho_v = L_values * R_cubed_rho_v
+    # Calculate derivative of R³ρᵥ
+    dR3rho_v_dt = calculate_gradient(R_cubed_rho_v, times)
     
-    # Calculate derivative of [L * R³ * ρᵥ] w.r.t time
-    dL_R3rho_v_dt = calculate_gradient(L_R3_rho_v, times)
-    
-    # Calculate R⁴ for inner integral
-    R4 = radii**4
+    # Calculate R⁴ with stability check
+    R4 = np.zeros(n)
+    for i in range(n):
+        R4[i] = radii_safe[i]**4
     
     # Pre-allocate arrays
-    R4_integral = np.zeros_like(times)
-    integrand = np.zeros_like(times)
+    R4_integral = np.zeros(n)
+    integrand = np.zeros(n)
     
-    # Calculate inner integral ∫ₓᵗ R⁴(y) dy
-    for i in prange(len(times)):
-        if i < len(times) - 1:
-            dx = times[i+1:] - times[i:-1]
-            R4_vals = (R4[i+1:] + R4[i:-1]) / 2
-            R4_integral[i] = np.sum(dx * R4_vals)
+    # Calculate inner integral ∫ᵗₓ R⁴(y)dy with stability checks
+    for i in range(n):
+        if i < n - 1:
+            integral = 0.0
+            for j in range(i+1, n):
+                dx = times[j] - times[j-1]
+                R4_avg = (R4[j] + R4[j-1]) / 2
+                integral += dx * R4_avg
+            R4_integral[i] = max(integral, 1e-30)
     
-    # Calculate integrand [d/dx (L*R³ρᵥ)] * [∫ₓᵗ R⁴ dy]^(-1/2)
-    for i in range(len(times)):
-        if R4_integral[i] > 1e-20:  # Avoid division by zero
-            integrand[i] = dL_R3rho_v_dt[i] / np.sqrt(R4_integral[i])
+    # Calculate integrand with stability checks
+    L = get_latent_heat(T_inf)  # Get temperature-dependent latent heat
+    for i in range(n):
+        sqrt_term = np.sqrt(max(R4_integral[i], 1e-30))
+        value = L * dR3rho_v_dt[i] / sqrt_term
+        integrand[i] = 0.0 if not isfinite(value) else value
     
-    # Final integration to compute T_s
-    dx = np.diff(times)
-    integral_term = np.sum(0.5 * dx * (integrand[1:] + integrand[:-1]))
+    # Calculate final temperature using trapezoidal integration
+    integral_term = 0.0
+    for i in range(1, n):
+        dx = times[i] - times[i-1]
+        integral_term += 0.5 * dx * (integrand[i] + integrand[i-1])
     
-    T_s = T_inf - (1/(3*k)) * np.sqrt(D/np.pi) * integral_term
+    # Calculate temperature with bounds
+    delta_T = (1/(3*k)) * np.sqrt(D/np.pi) * integral_term
+    T_s = T_inf - delta_T
+    
+    # Apply temperature bounds
+    if T_s < 0.5 * T_inf:
+        T_s = 0.5 * T_inf
+    elif T_s > 1.5 * T_inf:
+        T_s = 1.5 * T_inf
     
     return float(T_s)
-
 
 @jit(nopython=True)
 def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
@@ -303,6 +331,15 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
             t = t_span[i]
             dt = t - t_span[i-1]
             
+            # Print current simulation time periodically
+            if i % 100 == 0:
+                print(f"\nSimulation progress: {i/n_points*100:.1f}%")
+                print(f"Time: {t:.2e} s")
+                print(f"Bubble radius: {R[i-1]:.2e} m")
+                print(f"Wall velocity: {dR_dt[i-1]:.2e} m/s")
+                print(f"Surface temperature: {T_s_history[i-1]:.2f} K")
+                sys.stdout.flush()  # Ensure output is displayed immediately
+            
             # Calculate surface temperature
             T_s = calculate_Ts_optimized(t, t_history, R_history, T_inf, k, D, rho_v, superheat)
             T_s_history[i-1] = T_s
@@ -340,18 +377,53 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
             
             dt_sub = dt / n_substeps
             
-            # Sub-step integration
-            for _ in range(n_substeps):
-                dR_dt_new, R_ddot = rayleigh_plesset_optimized(
-                    R_current, dR_dt_current, t, T_s, params
-                )
+            # Sub-step integration with improved stability and iteration control
+            max_iterations = 100
+            iteration = 0
+            while iteration < max_iterations:
+                # Ensure R_current is positive and finite
+                if not (np.isfinite(R_current) and R_current > 0):
+                    print(f"\nWarning: R_current reset at t = {t:.2e} s")
+                    R_current = 1e-12
+                    dR_dt_current = 0.0
                 
-                # Update with velocity limiting
-                R_current += dt_sub * np.clip(dR_dt_new, -1e6, 1e6)
-                dR_dt_current = np.clip(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
-                
-                # Apply physical constraints
-                R_current = max(R_current, 1e-12)
+                try:
+                    dR_dt_new, R_ddot = rayleigh_plesset_optimized(
+                        R_current, dR_dt_current, t, T_s, params
+                    )
+                    
+                    # Handle any NaN or infinite values
+                    if not np.isfinite(dR_dt_new) or not np.isfinite(R_ddot):
+                        print(f"\nWarning: Non-finite values at t = {t:.2e} s")
+                        dR_dt_new = dR_dt_current
+                        R_ddot = 0.0
+                    
+                    # Update with velocity limiting and stability checks
+                    R_new = max(1e-12, R_current + dt_sub * np.clip(dR_dt_new, -1e6, 1e6))
+                    dR_dt_new = np.clip(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
+                    
+                    # Check convergence
+                    if abs((R_new - R_current)/R_current) < 1e-6:
+                        R_current = R_new
+                        dR_dt_current = dR_dt_new
+                        break
+                        
+                    R_current = R_new
+                    dR_dt_current = dR_dt_new
+                    iteration += 1
+                    
+                except Exception as e:
+                    print(f"\nError at t = {t:.2e} s: {str(e)}")
+                    R_current = max(1e-12, R_current)
+                    dR_dt_current = 0.0
+                    break
+            
+            if iteration >= max_iterations:
+                print(f"\nWarning: Maximum iterations reached at t = {t:.2e} s")
+            
+            # Ensure final values are physically meaningful
+            R_current = max(1e-12, min(1e-3, R_current))  # Limit radius between 1 picometer and 1 millimeter
+            dR_dt_current = np.clip(dR_dt_current, -1e6, 1e6)  # Limit velocity to ±1 km/s
             
             # Update state arrays
             R[i] = R_current
@@ -361,6 +433,12 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
             R_history = np.append(R_history, R_current)
             t_history = np.append(t_history, t)
             
+            # Update progress bar with more information
+            pbar.set_postfix({
+                'Time': f'{t:.2e}s',
+                'R': f'{R_current:.2e}m',
+                'V': f'{dR_dt_current:.2e}m/s'
+            })
             pbar.update(1)
     
     # Calculate final temperature point
@@ -371,54 +449,62 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
     return t_span, R, dR_dt, T_s_history
 
 if __name__ == "__main__":
-
-    
-    # Initial conditions from Case 3
-    R0 = 1e-6  # Initial radius (1 μm) - can be found by clausius clapeyron eq
-    dR0_dt = 0  # Initial velocity
-    
-    # Create time points focused on the region of interest
-    t_start = 1e-10  
-    t_end = 1 
-    n_points = 2000 # Increased for smoother curves
-    
-    # Generate time points with more resolution in the growth region
-    t_span = np.logspace(np.log10(t_start), np.log10(t_end), n_points)
-    
-    # Solve
-    t, R, dR_dt, T_s_history = solve_bubble_dynamics(R0, dR0_dt, t_span)
-    
-    # Convert velocity to cm/s for plotting
-    dR_dt_cms = dR_dt * 100  # Convert m/s to cm/s
-    
-    print("Starting bubble dynamics simulation...")
-    print("----------------------------------------")
-    print("Initial conditions:")
-    print(f"Initial radius (R0): {R0 * 1e6} μm")
-    print("Initial velocity (dR0/dt): 0 m/s")
-    print("----------------------------------------")
-    
-    # Plot results
-    plt.figure(figsize=(12, 8))
-    
-    # Plot 1: Bubble Wall Velocity (in cm/s)
-    plt.subplot(2, 1, 1)
-    plt.semilogx(t, dR_dt_cms, 'b-', linewidth=2)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Bubble Wall Velocity (cm/s)')
-    plt.title('Bubble Wall Velocity vs Time')
-    plt.grid(True)
-    plt.ylim(-100, 10000)  # Adjusted y-axis limits
-    
-    # Plot 2: Surface Temperature
-    plt.subplot(2, 1, 2)
-    plt.semilogx(t, T_s_history, 'r-', linewidth=2)
-    plt.xlabel('Time (s)')
-    plt.ylabel('Surface Temperature (K)')
-    plt.title('Surface Temperature vs Time')
-    plt.grid(True)
-    plt.ylim(1100, 1500)  # Set temperature limits based on expected range
-    
-    plt.tight_layout()
-    print("\nDisplaying plots...")
-    plt.show()
+    try:
+        # Initial conditions
+        R0 = 1e-6  # Initial radius [m]
+        dR0_dt = 0.0  # Initial velocity [m/s]
+        print("Initialized R0 and dR0_dt")
+        
+        # Temperature initialization
+        T_sat = 881.0 + 273  # Saturation temperature at 0.5 bar [K]
+        superheat = 340.0  # Specified superheat [K]
+        T_inf = T_sat + superheat  # Initial temperature [K]
+        print(f"Initialized temperatures: T_sat={T_sat}, T_inf={T_inf}")
+        
+        # Time span
+        t_start = 1e-9  # Start time [s]
+        t_end = 1e-4    # End time [s]
+        n_points = 1000  # Number of time points
+        t_span = np.logspace(np.log10(t_start), np.log10(t_end), n_points)
+        print("Created time span array")
+        
+        print("\nCalling solve_bubble_dynamics...")
+        t, R, dR_dt, T_s_history = solve_bubble_dynamics(R0, dR0_dt, t_span)
+        print("Finished solve_bubble_dynamics")
+        
+        if np.any(np.isnan(R)):
+            print("Warning: NaN values in R array")
+        if np.any(np.isnan(dR_dt)):
+            print("Warning: NaN values in dR_dt array")
+        if np.any(np.isnan(T_s_history)):
+            print("Warning: NaN values in T_s_history array")
+        
+        # Save the plots
+        plt.figure(figsize=(12, 8))
+        
+        # Plot 1: Bubble Wall Velocity (in cm/s)
+        plt.subplot(2, 1, 1)
+        plt.semilogx(t, dR_dt * 100, 'b-', linewidth=2)
+        plt.xlabel('Time (s)')
+        plt.ylabel('Bubble Wall Velocity (cm/s)')
+        plt.title('Bubble Wall Velocity vs Time')
+        plt.grid(True)
+        plt.ylim(-100, 10000)
+        
+        # Plot 2: Surface Temperature
+        plt.subplot(2, 1, 2)
+        plt.semilogx(t, T_s_history, 'r-', linewidth=2)
+        plt.xlabel('Time (s)')
+        plt.ylabel('Surface Temperature (K)')
+        plt.title('Surface Temperature vs Time')
+        plt.grid(True)
+        plt.ylim(1100, 1500)
+        
+        plt.tight_layout()
+        plt.savefig('bubble_dynamics_results.png')
+        print("\nPlots saved as 'bubble_dynamics_results.png'")
+        
+    except Exception as e:
+        print(f"Error occurred: {str(e)}")
+        import traceback
+        traceback.print_exc()
