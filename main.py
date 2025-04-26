@@ -381,13 +381,10 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
         
         dt_sub = dt / n_substeps
         
-        # Sub-step integration with improved stability and iteration control
-        max_iterations = 100
-        iteration = 0
-        while iteration < max_iterations:
+        # Sub-step integration with improved stability
+        for _ in range(n_substeps):
             # Ensure R_current is positive and finite
             if not (np.isfinite(R_current) and R_current > 0):
-                print(f"\nWarning: R_current reset at t = {t:.2e} s")
                 R_current = 1e-12
                 dR_dt_current = 0.0
             
@@ -398,32 +395,18 @@ def solve_bubble_dynamics(R0, dR0_dt, t_span):
                 
                 # Handle any NaN or infinite values
                 if not np.isfinite(dR_dt_new) or not np.isfinite(R_ddot):
-                    print(f"\nWarning: Non-finite values at t = {t:.2e} s")
                     dR_dt_new = dR_dt_current
                     R_ddot = 0.0
                 
                 # Update with velocity limiting and stability checks
                 R_new = max(1e-12, R_current + dt_sub * np.clip(dR_dt_new, -1e6, 1e6))
-                dR_dt_new = np.clip(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
+                dR_dt_current = np.clip(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
                 
-                # Check convergence
-                if abs((R_new - R_current)/R_current) < 1e-6:
-                    R_current = R_new
-                    dR_dt_current = dR_dt_new
-                    break
-                    
                 R_current = R_new
-                dR_dt_current = dR_dt_new
-                iteration += 1
-                
-            except Exception as e:
-                print(f"\nError at t = {t:.2e} s: {str(e)}")
+            except:
+                # If any calculation fails, maintain previous values with small changes
                 R_current = max(1e-12, R_current)
                 dR_dt_current = 0.0
-                break
-        
-        if iteration >= max_iterations:
-            print(f"\nWarning: Maximum iterations reached at t = {t:.2e} s")
         
         # Ensure final values are physically meaningful
         R_current = max(1e-12, min(1e-3, R_current))  # Limit radius between 1 picometer and 1 millimeter
@@ -462,7 +445,7 @@ if __name__ == "__main__":
         
         # Time span
         t_start = 1e-9  # Start time [s]
-        t_end = 1e-4    # End time [s]
+        t_end = 1e-2    # End time [s]
         n_points = 1000  # Number of time points
         t_span = np.logspace(np.log10(t_start), np.log10(t_end), n_points)
         print(f"Time span: {t_start:.2e} to {t_end:.2e} seconds", flush=True)
