@@ -166,23 +166,75 @@ def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
     
     return dR_dt, R_ddot
 
+# Add minimum and maximum temperature bounds as constants
+T_MIN = 300.0  # K (minimum reasonable temperature)
+T_MAX = 2500.0  # K (close to critical point of sodium)
+
+def calculate_Ts_integral_term(t_hist, R_hist, Ts_hist, current_t):
+    """
+    Vectorized calculation of the integral term in the Ts equation with improved stability
+    """
+    if len(t_hist) < 3:
+        return T_INF
+
+    try:
+        # Convert to numpy arrays once and ensure minimum positive values
+        t_arr = np.asarray(t_hist, dtype=np.float64)
+        R_arr = np.maximum(np.asarray(R_hist, dtype=np.float64), 1e-12)
+        Ts_arr = np.clip(np.asarray(Ts_hist, dtype=np.float64), T_MIN, T_MAX)
+        
+        # Vectorized calculation of ρv with stability checks
+        rho_v_hist = np.maximum(np.vectorize(rho_v)(Ts_arr), 1e-12)
+        
+        # Calculate R³ρv with numerical stability
+        R_cubed = np.clip(R_arr**3, 1e-36, 1e6)
+        integrand_part1_base = R_cubed * rho_v_hist
+        
+        # Calculate derivative with bounds
+        try:
+            deriv_term = np.gradient(integrand_part1_base, t_arr, edge_order=1)
+            deriv_term = np.clip(deriv_term, -1e10, 1e10)  # Limit extreme derivatives
+        except:
+            return T_INF
+        
+        # Calculate inner integral with improved stability
+        R4_values = np.clip(R_arr**4, 1e-48, 1e8)
+        mask = (t_arr <= current_t)
+        
+        if not np.any(mask):
+            return T_INF
+            
+        integral = np.trapz(R4_values[mask], t_arr[mask])
+        inner_integral = max(integral, 1e-30)
+            
+        # Calculate final temperature with strict bounds
+        delta_T = (1.0 / (3.0 * K_L)) * np.sqrt(D_L / np.pi) * safe_divide(deriv_term[-1], np.sqrt(inner_integral), 0.0)
+        delta_T = np.clip(delta_T, -200, 200)  # Limit maximum temperature change to physically reasonable values
+        
+        T_s = T_INF - delta_T
+        return np.clip(T_s, T_MIN, T_MAX)
+            
+    except Exception as e:
+        return T_INF
+
 @jit(nopython=True)
 def integrate_substeps(R_current, dR_dt_current, dt_sub, n_substeps, params, T_s):
-    """Optimized sub-step integration"""
+    """Optimized sub-step integration with improved stability"""
     for _ in range(n_substeps):
-        if not (np.isfinite(R_current) and R_current > 0):
-            R_current = 1e-12
-            dR_dt_current = 0.0
+        # Ensure positive radius
+        R_current = max(R_current, 1e-12)
         
+        # Calculate new derivatives
         dR_dt_new, R_ddot = rayleigh_plesset_optimized(R_current, dR_dt_current, 0.0, T_s, params)
         
+        # Handle invalid values
         if not (np.isfinite(dR_dt_new) and np.isfinite(R_ddot)):
             dR_dt_new = dR_dt_current
             R_ddot = 0.0
         
-        # Use clip_value instead of np.clip
+        # Update with strict bounds
         dR_dt_new = clip_value(dR_dt_new, -1e6, 1e6)
-        R_new = max(1e-12, R_current + dt_sub * dR_dt_new)
+        R_new = max(1e-12, min(1e-3, R_current + dt_sub * dR_dt_new))  # Limit radius between 1pm and 1mm
         dR_dt_current = clip_value(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
         R_current = R_new
         
@@ -244,59 +296,6 @@ def calculate_dVdt(R, V, Ts):
         return np.clip(dVdt, -1e8, 1e8)
     except:
         return 0.0
-
-def calculate_Ts_integral_term(t_hist, R_hist, Ts_hist, current_t):
-    """
-    Vectorized calculation of the integral term in the Ts equation with improved stability
-    """
-    if len(t_hist) < 3:
-        return T_INF
-
-    try:
-        # Convert to numpy arrays once
-        t_arr = np.asarray(t_hist, dtype=np.float64)
-        R_arr = np.maximum(np.asarray(R_hist, dtype=np.float64), 1e-12)
-        Ts_arr = np.asarray(Ts_hist, dtype=np.float64)
-        
-        # Ensure temperature bounds for vapor density calculation
-        Ts_arr = np.clip(Ts_arr, T_INF * 0.5, T_INF * 1.5)
-        
-        # Vectorized calculation of ρv with stability checks
-        rho_v_hist = np.maximum(np.vectorize(rho_v)(Ts_arr), 1e-12)
-        
-        # Vectorized R³ρv calculation with stability bounds
-        R_cubed = np.clip(R_arr**3, 1e-36, 1e6)
-        integrand_part1_base = R_cubed * rho_v_hist
-        
-        # Vectorized derivative calculation with stability checks
-        try:
-            deriv_term = np.gradient(integrand_part1_base, t_arr, edge_order=1)
-        except:
-            return T_INF
-        
-        # Pre-compute R⁴ for all points with bounds
-        R4_values = np.clip(R_arr**4, 1e-48, 1e8)
-        
-        # Modified inner integral calculation with stability
-        mask = (t_arr <= current_t)
-        if not np.any(mask):
-            return T_INF
-            
-        integral = np.trapz(R4_values[mask], t_arr[mask])
-        inner_integral = max(integral, 1e-30)
-            
-        # Final integral calculation with stability bounds
-        integral_val = L_VAP * safe_divide(deriv_term[-1], np.sqrt(inner_integral), 0.0)
-        
-        # Calculate temperature with strict bounds
-        delta_T = (1.0 / (3.0 * K_L)) * np.sqrt(D_L / np.pi) * integral_val
-        T_s = T_INF - delta_T
-        
-        # Ensure temperature stays within physical bounds
-        return np.clip(T_s, T_INF * 0.5, T_INF * 1.5)
-            
-    except Exception as e:
-        return T_INF
 
 # Pre-allocate arrays for history storage at start
 t_history = np.zeros(n_steps + 1)
