@@ -183,18 +183,24 @@ def get_vapor_pressure(T):
     return P
 
 @jit(nopython=True)
-def calculate_Ts_optimized(t, times, radii, T_inf, k, D, rho_v, superheat):
+def calculate_Ts_updated(t, times, radii, T_inf, k, D, rho_v, superheat):
     """
-    Calculate surface temperature T_s using the integral equation
+    Calculate surface temperature T_s using the corrected integral equation
     """
     if len(times) < 2:
         return T_inf
     
-    # Calculate R³ρᵥ term
+    # Calculate R³ρᵥ
     R_cubed_rho_v = radii**3 * rho_v
     
-    # Calculate derivative of R³ρᵥ
-    dR3rho_v_dt = calculate_gradient(R_cubed_rho_v, times)
+    # Calculate L(T_s) at each point (initial guess: T_inf)
+    L_values = np.array([get_latent_heat(T_inf) for _ in times])
+    
+    # Form the product L * R³ * ρᵥ
+    L_R3_rho_v = L_values * R_cubed_rho_v
+    
+    # Calculate derivative of [L * R³ * ρᵥ] w.r.t time
+    dL_R3rho_v_dt = calculate_gradient(L_R3_rho_v, times)
     
     # Calculate R⁴ for inner integral
     R4 = radii**4
@@ -203,30 +209,26 @@ def calculate_Ts_optimized(t, times, radii, T_inf, k, D, rho_v, superheat):
     R4_integral = np.zeros_like(times)
     integrand = np.zeros_like(times)
     
-    # Calculate inner integral ∫ᵗₓ R⁴(y)dy
+    # Calculate inner integral ∫ₓᵗ R⁴(y) dy
     for i in prange(len(times)):
         if i < len(times) - 1:
             dx = times[i+1:] - times[i:-1]
             R4_vals = (R4[i+1:] + R4[i:-1]) / 2
             R4_integral[i] = np.sum(dx * R4_vals)
     
-    # Initial guess for T_s
-    T_s = T_inf
-    
-    # Calculate integrand L * d/dx[R³ρᵥ] * [∫ᵗₓ R⁴(y)dy]^(-1/2)
+    # Calculate integrand [d/dx (L*R³ρᵥ)] * [∫ₓᵗ R⁴ dy]^(-1/2)
     for i in range(len(times)):
         if R4_integral[i] > 1e-20:  # Avoid division by zero
-            L = get_latent_heat(T_s)  # Get temperature-dependent latent heat
-            integrand[i] = L * dR3rho_v_dt[i] / np.sqrt(R4_integral[i])
+            integrand[i] = dL_R3rho_v_dt[i] / np.sqrt(R4_integral[i])
     
-    # Calculate final temperature using trapezoidal integration
+    # Final integration to compute T_s
     dx = np.diff(times)
     integral_term = np.sum(0.5 * dx * (integrand[1:] + integrand[:-1]))
     
-    # Apply equation exactly as written
     T_s = T_inf - (1/(3*k)) * np.sqrt(D/np.pi) * integral_term
     
     return float(T_s)
+
 
 @jit(nopython=True)
 def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
