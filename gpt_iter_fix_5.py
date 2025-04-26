@@ -4,14 +4,10 @@ import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 from tqdm import tqdm
-from joblib import Parallel, delayed, cpu_count
+from joblib import Parallel, delayed
 import concurrent.futures
-from numba import jit, float64, njit, prange
-from functools import lru_cache
-
-# Enable parallel processing with numba if available
-PARALLEL_ENABLED = True
-NUM_CORES = max(1, cpu_count() - 1)  # Leave one core free for system tasks
+from numba import jit, float64, njit  # Added Numba import
+from functools import lru_cache  # For caching functions
 
 # Physical properties of liquid sodium
 rho = 800  # Liquid density (kg/m^3)
@@ -103,28 +99,32 @@ def custom_rk4_step(R, dRdt, T_s, dt):
     
     return R_new, dRdt_new, T_s_new
 
-@njit(cache=True, parallel=PARALLEL_ENABLED)
-def batch_rk4_steps(R_array, dRdt_array, Ts_array, dt, n_batch):
+def vapor_pressure(T):
+    """Cached vapor pressure calculation using lookup table when available."""
+    if p_v_lookup is not None:
+        return p_v_lookup(T)
+    else:
+        return vapor_pressure_raw(T)
+
+def solve_custom_two_stage():
     """
-    Process multiple integration steps in parallel using numba.
-    
-    Args:
-        R_array: Array of radius values
-        dRdt_array: Array of velocity values
-        Ts_array: Array of temperature values
-        dt: Time step
-        n_batch: Number of substeps to process
-        
-    Returns:
-        Updated arrays
+    Solve using fast custom RK4 integrator with adaptive time stepping
     """
-    n = len(R_array)
-    R_new = np.zeros(n)
-    dRdt_new = np.zeros(n)
-    Ts_new = np.zeros(n)
+    print("Starting custom fast two-stage integration...")
     
-    # Process each substep in parallel when possible
-    for i in prange(n):
+    # Initialize property tables before integration
+    global p_v_lookup
+    p_v_lookup = create_property_tables(t_min=900, t_max=1600, n_points=500)
+    
+    # Stage 1 parameters: Early evolution (fine resolution)
+    t_start_1 = 1e-9
+    t_end_1 = 1e-5
+    n_points_1 = 200  # Reduced number of points
+    
+    # Stage 2 parameters: Later evolution (coarser resolution)
+    t_end_2 = 1.0
+    n_points_2 = 200  # Reduced number of points
+    
     # Create time arrays with logarithmic spacing
     t1 = np.logspace(np.log10(t_start_1), np.log10(t_end_1), n_points_1)
     t2 = np.logspace(np.log10(t_end_1), np.log10(t_end_2), n_points_2)
