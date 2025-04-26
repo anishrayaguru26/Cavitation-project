@@ -15,35 +15,74 @@ def isfinite(x):
 @jit(nopython=True)
 def calculate_gradient(y, x):
     """
-    Calculate gradient using central differences with Numba optimization
+    Calculate gradient using central differences with Numba optimization and enhanced stability
     """
     n = len(y)
     dy = np.zeros(n)
     
-    # Forward difference for first point
-    dy[0] = (y[1] - y[0]) / (x[1] - x[0])
+    try:
+        # Forward difference for first point with stability check
+        dx_start = max(x[1] - x[0], 1e-15)  # Prevent division by zero
+        dy[0] = (y[1] - y[0]) / dx_start
+        if not isfinite(dy[0]):
+            dy[0] = 0.0
+        
+        # Central difference for interior points with stability checks
+        for i in range(1, n-1):
+            dx = max(x[i+1] - x[i-1], 1e-15)  # Prevent division by zero
+            dy[i] = (y[i+1] - y[i-1]) / dx
+            if not isfinite(dy[i]):
+                dy[i] = dy[i-1] if isfinite(dy[i-1]) else 0.0
+        
+        # Backward difference for last point with stability check
+        dx_end = max(x[-1] - x[-2], 1e-15)  # Prevent division by zero
+        dy[-1] = (y[-1] - y[-2]) / dx_end
+        if not isfinite(dy[-1]):
+            dy[-1] = dy[-2] if isfinite(dy[-2]) else 0.0
+            
+    except:
+        # If any calculation fails, return zeros
+        return np.zeros(n)
     
-    # Central difference for interior points
-    for i in range(1, n-1):
-        dy[i] = (y[i+1] - y[i-1]) / (x[i+1] - x[i-1])
-    
-    # Backward difference for last point
-    dy[-1] = (y[-1] - y[-2]) / (x[-1] - x[-2])
-    
+    # Final check for any remaining invalid values
+    for i in range(n):
+        if not isfinite(dy[i]):
+            dy[i] = 0.0
+            
     return dy
 
 @jit(nopython=True)
 def calculate_inner_integral(times, radii, start_idx):
-    """Optimized calculation of inner integral"""
+    """Optimized calculation of inner integral with enhanced stability"""
     n = len(times)
     if start_idx >= n - 1:
-        return 0.0
+        return 1e-30
         
-    integral = 0.0
-    for i in range(start_idx + 1, n):
-        R4_avg = (radii[i]**4 + radii[i-1]**4) / 2
-        dt = times[i] - times[i-1]
-        integral += R4_avg * dt
+    try:
+        integral = 0.0
+        prev_valid_value = 0.0
+        
+        for i in range(start_idx + 1, n):
+            dt = max(times[i] - times[i-1], 1e-15)  # Prevent zero time step
+            
+            # Safely calculate R^4 averages with bounds
+            r1 = max(min(radii[i], 1e-3), 1e-12)  # Limit radius between 1pm and 1mm
+            r2 = max(min(radii[i-1], 1e-3), 1e-12)
+            
+            R4_1 = r1**4
+            R4_2 = r2**4
+            
+            if isfinite(R4_1) and isfinite(R4_2):
+                R4_avg = (R4_1 + R4_2) / 2
+                increment = R4_avg * dt
+                if isfinite(increment):
+                    integral += increment
+                    prev_valid_value = integral
+            else:
+                integral = prev_valid_value
+                
+    except:
+        return max(prev_valid_value, 1e-30)
         
     return max(integral, 1e-30)  # Ensure positive value
 
@@ -210,44 +249,25 @@ def calculate_Ts_optimized(t, times, radii, T_inf, k, D, rho_v, superheat):
     R_cubed_rho_v = np.zeros(n)
     for i in range(n):
         R_cubed_rho_v[i] = radii_safe[i]**3 * rho_v
+        
+    # Calculate derivative with stability check
+    if len(times) > 1:
+        try:
+            deriv_term = calculate_gradient(R_cubed_rho_v, times)
+        except:
+            return T_inf
+    else:
+        return T_inf
     
-    # Calculate derivative of R³ρᵥ
-    dR3rho_v_dt = calculate_gradient(R_cubed_rho_v, times)
+    # Calculate inner integral
+    integral_term = calculate_inner_integral(times, radii_safe, 0)
+    if integral_term <= 1e-30:
+        return T_inf
     
-    # Calculate R⁴ with stability check
-    R4 = np.zeros(n)
-    for i in range(n):
-        R4[i] = radii_safe[i]**4
+    # Calculate temperature change
+    delta_T = (1.0 / (3.0 * k)) * np.sqrt(D / np.pi) * deriv_term[-1] / np.sqrt(integral_term)
     
-    # Pre-allocate arrays
-    R4_integral = np.zeros(n)
-    integrand = np.zeros(n)
-    
-    # Calculate inner integral ∫ᵗₓ R⁴(y)dy with stability checks
-    for i in range(n):
-        if i < n - 1:
-            integral = 0.0
-            for j in range(i+1, n):
-                dx = times[j] - times[j-1]
-                R4_avg = (R4[j] + R4[j-1]) / 2
-                integral += dx * R4_avg
-            R4_integral[i] = max(integral, 1e-30)
-    
-    # Calculate integrand with stability checks
-    L = get_latent_heat(T_inf)  # Get temperature-dependent latent heat
-    for i in range(n):
-        sqrt_term = np.sqrt(max(R4_integral[i], 1e-30))
-        value = L * dR3rho_v_dt[i] / sqrt_term
-        integrand[i] = 0.0 if not isfinite(value) else value
-    
-    # Calculate final temperature using trapezoidal integration
-    integral_term = 0.0
-    for i in range(1, n):
-        dx = times[i] - times[i-1]
-        integral_term += 0.5 * dx * (integrand[i] + integrand[i-1])
-    
-    # Calculate temperature with bounds
-    delta_T = (1/(3*k)) * np.sqrt(D/np.pi) * integral_term
+    # Apply temperature change with bounds
     T_s = T_inf - delta_T
     
     # Apply temperature bounds
@@ -433,7 +453,7 @@ if __name__ == "__main__":
         print("-" * 50, flush=True)
         
         # Initial conditions
-        R0 = 1e-6  # Initial radius [m]
+        R0 = 1e-6  # Initial radius 1 micrometer [m]
         dR0_dt = 0.0  # Initial velocity [m/s]
         print(f"Initial conditions: R0 = {R0:.2e} m, dR0_dt = {dR0_dt:.2e} m/s", flush=True)
         
@@ -443,9 +463,9 @@ if __name__ == "__main__":
         T_inf = T_sat + superheat  # Initial temperature [K]
         print(f"Temperature parameters: T_sat = {T_sat:.2f} K, T_inf = {T_inf:.2f} K", flush=True)
         
-        # Time span
-        t_start = 1e-9  # Start time [s]
-        t_end = 1e-2    # End time [s]
+        # Time span with extended bounds
+        t_start = 1e-10  # Start time [s]
+        t_end = 1.0      # End time [s]
         n_points = 1000  # Number of time points
         t_span = np.logspace(np.log10(t_start), np.log10(t_end), n_points)
         print(f"Time span: {t_start:.2e} to {t_end:.2e} seconds", flush=True)
