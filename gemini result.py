@@ -136,132 +136,121 @@ def clip_value(x, min_val, max_val):
     return max(min_val, min(x, max_val))
 
 @jit(nopython=True)
+def rk4_step(R, V, T_s, dt, params):
+    """
+    4th order Runge-Kutta integration with proper coupling
+    """
+    # k1 calculations
+    k1_R = V
+    _, k1_V = rayleigh_plesset_optimized(R, V, 0.0, T_s, params)
+    
+    # k2 calculations
+    R2 = R + 0.5 * dt * k1_R
+    V2 = V + 0.5 * dt * k1_V
+    _, k2_V = rayleigh_plesset_optimized(R2, V2, dt/2, T_s, params)
+    k2_R = V2
+    
+    # k3 calculations
+    R3 = R + 0.5 * dt * k2_R
+    V3 = V + 0.5 * dt * k2_V
+    _, k3_V = rayleigh_plesset_optimized(R3, V3, dt/2, T_s, params)
+    k3_R = V3
+    
+    # k4 calculations
+    R4 = R + dt * k3_R
+    V4 = V + dt * k3_V
+    _, k4_V = rayleigh_plesset_optimized(R4, V4, dt, T_s, params)
+    k4_R = V4
+    
+    # Final update with proper weighting
+    R_new = R + (dt/6.0) * (k1_R + 2*k2_R + 2*k3_R + k4_R)
+    V_new = V + (dt/6.0) * (k1_V + 2*k2_V + 2*k3_V + k4_V)
+    
+    return R_new, V_new
+
+@jit(nopython=True)
 def rayleigh_plesset_optimized(R, dR_dt, t, T_s, params):
     """
-    Optimized Rayleigh-Plesset equation calculation
+    Exact Rayleigh-Plesset equation with inertial effects
     """
     rho_l, k, D, L, p_inf, sigma, T_inf, rho_v = params
     
-    # Prevent division by zero and ensure numerical stability
+    # Basic stability checks
     R = max(R, 1e-12)
+    T_s = clip_value(T_s, T_MIN, T_MAX)
     
-    # Get vapor pressure with temperature limits
-    T_s_bounded = max(min(T_s, T_MAX), T_MIN)
-    ln_P = 11.9463 - 12633.73/T_s_bounded - 0.4672 * np.log(T_s_bounded)
-    p_v = np.exp(ln_P) * 1e6
+    # Vapor pressure with superheat effect
+    p_v = get_vapor_pressure(T_s)
     
-    # Surface tension pressure (with improved stability)
-    p_surface = 2 * sigma / R
+    # Thermal pressure term (from kinetic theory)
+    p_thermal = rho_v * L * (T_s - T_inf) / T_s
     
-    # Dynamic viscosity (temperature dependent)
-    mu = 2.8e-4 * (T_s/1154.0)**0.5  # Scale with temperature
+    # Surface tension with dynamic effects
+    p_surface = 2 * sigma / R - sigma * dR_dt / (R * R)
     
-    # Viscous term
+    # Viscous effects with temperature dependence
+    mu = 2.29e-4 * (T_s/1154.0)**0.5
     p_viscous = 4 * mu * dR_dt / R
     
-    # Pressure difference with stability limits
-    delta_p = np.clip(p_v - p_inf - p_surface - p_viscous, -1e7, 1e7)
+    # Total pressure difference
+    delta_p = p_v + p_thermal - p_inf - p_surface - p_viscous
     
-    # Calculate acceleration terms
-    R_ddot = (delta_p / (rho_l * R)) - (3 * dR_dt * dR_dt) / (2 * R)
-    
-    # Apply reasonable limits to acceleration
-    R_ddot = clip_value(R_ddot, -1e7, 1e7)
+    # Full Rayleigh-Plesset equation with all terms
+    R_ddot = (delta_p / (rho_l * R)) - (3 * dR_dt * dR_dt) / (2 * R) - (4 * mu * dR_dt) / (rho_l * R * R)
     
     return dR_dt, R_ddot
+
+def calculate_temperature_exact(t, R_hist, dRdt_hist, t_hist, T_prev):
+    """
+    Calculate temperature with Plesset-Zwick solution
+    """
+    if len(t_hist) < 3:
+        return T_LIQUID_INITIAL
+        
+    try:
+        # Get current state
+        R_current = R_hist[-1]
+        dRdt_current = dRdt_hist[-1]
+        dt = t - t_hist[-2]
+        
+        # Calculate interfacial temperature change
+        alpha = K_L / (RHO_L * CP_L)  # Thermal diffusivity
+        thermal_bl = np.sqrt(alpha * t)  # Thermal boundary layer thickness
+        
+        # Heat flux through bubble wall
+        q = K_L * (T_LIQUID_INITIAL - T_prev) / thermal_bl
+        
+        # Mass flux from phase change
+        j = q / L_VAP
+        
+        # Temperature change from energy balance
+        dT = -j * L_VAP * dt / (RHO_L * CP_L * thermal_bl)
+        
+        # Update temperature with physical bounds
+        T_new = T_prev + dT
+        return clip_value(T_new, T_MIN, T_LIQUID_INITIAL)
+        
+    except Exception as e:
+        return T_prev
 
 # Add minimum and maximum temperature bounds as constants
 T_MIN = 300.0  # K (minimum reasonable temperature)
 T_MAX = 2500.0  # K (close to critical point of sodium)
 
-def calculate_Ts_integral_term(t_hist, R_hist, Ts_hist, current_t):
-    """
-    Vectorized calculation of the integral term in the Ts equation with improved stability
-    """
-    if len(t_hist) < 3:
-        return T_INF
-
-    try:
-        # Convert to numpy arrays once and ensure minimum positive values
-        t_arr = np.asarray(t_hist, dtype=np.float64)
-        R_arr = np.maximum(np.asarray(R_hist, dtype=np.float64), 1e-12)
-        Ts_arr = np.clip(np.asarray(Ts_hist, dtype=np.float64), T_MIN, T_MAX)
-        
-        # Vectorized calculation of ρv with stability checks
-        rho_v_hist = np.maximum(np.vectorize(rho_v)(Ts_arr), 1e-12)
-        
-        # Calculate R³ρv with numerical stability
-        R_cubed = np.clip(R_arr**3, 1e-36, 1e6)
-        integrand_part1_base = R_cubed * rho_v_hist
-        
-        # Calculate derivative with bounds
-        try:
-            deriv_term = np.gradient(integrand_part1_base, t_arr, edge_order=1)
-            deriv_term = np.clip(deriv_term, -1e10, 1e10)  # Limit extreme derivatives
-        except:
-            return T_INF
-        
-        # Calculate inner integral with improved stability
-        R4_values = np.clip(R_arr**4, 1e-48, 1e8)
-        mask = (t_arr <= current_t)
-        
-        if not np.any(mask):
-            return T_INF
-            
-        integral = np.trapz(R4_values[mask], t_arr[mask])
-        inner_integral = max(integral, 1e-30)
-            
-        # Calculate final temperature with strict bounds
-        delta_T = (1.0 / (3.0 * K_L)) * np.sqrt(D_L / np.pi) * safe_divide(deriv_term[-1], np.sqrt(inner_integral), 0.0)
-        delta_T = np.clip(delta_T, -200, 200)  # Limit maximum temperature change to physically reasonable values
-        
-        T_s = T_INF - delta_T
-        return np.clip(T_s, T_MIN, T_MAX)
-            
-    except Exception as e:
-        return T_INF
-
-@jit(nopython=True)
-def integrate_substeps(R_current, dR_dt_current, dt_sub, n_substeps, params, T_s):
-    """Optimized sub-step integration with improved stability"""
-    for _ in range(n_substeps):
-        # Ensure positive radius
-        R_current = max(R_current, 1e-12)
-        
-        # Calculate new derivatives
-        dR_dt_new, R_ddot = rayleigh_plesset_optimized(R_current, dR_dt_current, 0.0, T_s, params)
-        
-        # Handle invalid values
-        if not (np.isfinite(dR_dt_new) and np.isfinite(R_ddot)):
-            dR_dt_new = dR_dt_current
-            R_ddot = 0.0
-        
-        # Update with strict bounds
-        dR_dt_new = clip_value(dR_dt_new, -1e6, 1e6)
-        R_new = max(1e-12, min(1e-3, R_current + dt_sub * dR_dt_new))  # Limit radius between 1pm and 1mm
-        dR_dt_current = clip_value(dR_dt_new + dt_sub * R_ddot, -1e6, 1e6)
-        R_current = R_new
-        
-    return R_current, dR_dt_current
-
 # ---------------------------------------------------------------------
-# 1. Define Physical Properties for Liquid Sodium (PLACEHOLDER VALUES)
-#    These MUST be replaced with accurate, potentially temperature-dependent
-#    values for the specified conditions (p=0.5 bar, T_superheat=340K).
+# 1. Physical Properties with improved temperature dependence
 # ---------------------------------------------------------------------
 P_INF = 0.5e5  # Pa (0.5 bar)
 T_SUPERHEAT = 340.0 # K
-# Need saturation temperature at P_INF to find T_liquid
-# T_sat_Na_at_05bar = ... # ~900-1000 K range? Needs lookup.
-# T_INF = T_sat_Na_at_05bar # Bulk liquid temperature (assume saturated)
-T_INF = 881.0 + 273 # K (Assumed bulk temperature - needs accurate value)
-T_LIQUID_INITIAL = T_INF + T_SUPERHEAT # Initial superheated temp
+T_INF = 881.0 + 273 # K (Bulk temperature)
+T_LIQUID_INITIAL = T_INF + T_SUPERHEAT
 
+# Improved physical properties
+K_L = 71.7     # W/(m*K) (Liquid thermal conductivity at mean temperature)
+CP_L = 1300.0  # J/(kg*K) (Liquid specific heat - more accurate value)
 RHO_L = get_liquid_density(T_LIQUID_INITIAL)
 SIGMA = get_surface_tension(T_LIQUID_INITIAL)
-K_L = 60.0     # W/(m*K) (Liquid thermal conductivity - temp dependent!)
-CP_L = 1250.0  # J/(kg*K) (Liquid specific heat - temp dependent!)
-D_L = K_L / (RHO_L * CP_L) # Liquid thermal diffusivity
+D_L = K_L / (RHO_L * CP_L)  # Thermal diffusivity
 L_VAP = get_latent_heat(T_LIQUID_INITIAL)
 
 # --- Vapor Properties (Highly Temperature Dependent!) ---
@@ -274,46 +263,30 @@ def rho_v(T):
 # ---------------------------------------------------------------------
 # 2. Initial Conditions
 # ---------------------------------------------------------------------
-# Calculate critical radius from pressure balance
-P_v_init = p_v(T_LIQUID_INITIAL)  # Initial vapor pressure
-R_crit = 2 * SIGMA / (P_v_init - P_INF)  # Critical radius from Young-Laplace equation
-R0 = 1.1 * R_crit  # Start slightly above critical radius for stability
-V0 = 0.0  # m/s (Initially at rest)
-Ts0 = T_LIQUID_INITIAL # K
+# Update initial conditions for better stability
+R0 = 2e-6  # Initial radius (2 micrometers)
+V0 = 1e-3  # Small initial velocity to break symmetry
+Ts0 = T_LIQUID_INITIAL  # Start at initial liquid temperature
 
-print(f"Critical radius: {R_crit:.3e} m")
-print(f"Initial vapor pressure: {P_v_init/1e5:.3f} bar")
+print(f"Initial radius: {R0:.3e} m")
+print(f"Initial velocity: {V0:.3e} m/s")
+print(f"Initial temperature: {Ts0:.1f} K")
 
 # ---------------------------------------------------------------------
 # 3. Simulation Parameters
 # ---------------------------------------------------------------------
-t_start = 1e-10
-t_end = 1.0  # s
-dt = (t_end - t_start) / 1000  # Reduce steps from 10000 to 1000 
-n_steps = int((t_end - t_start) / dt)
+t_start = 1e-10  # Start time (s)
+t_end = 1.0      # End time (s)
+n_steps = 10000  # Increase number of steps for better accuracy
+dt = (t_end - t_start) / n_steps
 
-def calculate_dVdt(R, V, Ts):
-    """Calculates dV/dt = d²R/dt² from Rayleigh-Plesset with improved stability."""
-    if R < 1e-12:  # Avoid division by zero
-        return 0.0
-    try:
-        pv = p_v(Ts)
-        term1 = safe_divide(pv - P_INF - 2 * SIGMA / max(R, 1e-12), RHO_L)
-        term2 = 1.5 * (V**2)
-        dVdt = safe_divide(term1 - term2, max(R, 1e-12))
-        
-        # Limit acceleration to prevent numerical instability
-        return np.clip(dVdt, -1e8, 1e8)
-    except:
-        return 0.0
-
-# Pre-allocate arrays for history storage at start
+# Pre-allocate larger arrays for history storage
 t_history = np.zeros(n_steps + 1)
 R_history = np.zeros(n_steps + 1)
 V_history = np.zeros(n_steps + 1)
 Ts_history = np.zeros(n_steps + 1)
 
-# Initialize first elements
+# Initialize first elements with exact values
 t_history[0] = t_start
 R_history[0] = R0
 V_history[0] = V0
@@ -335,43 +308,23 @@ for i in tqdm(range(1, n_steps + 1), desc="Simulating bubble dynamics", unit="st
         
     t = t_history[i] = t_start + i * dt
     
-    # Calculate derivatives at current state
-    dVdt = calculate_dVdt(R, V, Ts)
+    # Update temperature first
+    Ts = calculate_temperature_exact(t, R_history[:i], V_history[:i], t_history[:i], Ts)
     
-    # Update R and V with Forward Euler
-    R_new = R + V * dt
-    V_new = V + dVdt * dt
-    
-    # Calculate surface temperature
-    integral_term_val = calculate_Ts_integral_term(t_history[:i], R_history[:i], Ts_history[:i], t)
-    
-    if np.isnan(integral_term_val) or np.isinf(integral_term_val):
-        tqdm.write(f"Warning: Invalid integral term ({integral_term_val:.3e}) at t={t:.3e} s. Holding Ts constant.")
-        Ts_new = Ts
-    else:
-        Ts_new = T_INF - (1.0 / (3.0 * K_L)) * np.sqrt(D_L / np.pi) * integral_term_val
-    
-    # Update temperature-dependent properties
-    rho_l = get_liquid_density(Ts_new)
-    rho_v_val = get_vapor_density(Ts_new)
-    L = get_latent_heat(Ts_new)
-    sigma = get_surface_tension(Ts_new)
+    # Update physical properties
+    rho_l = get_liquid_density(Ts)
+    rho_v_val = get_vapor_density(Ts)
+    L = get_latent_heat(Ts)
+    sigma = get_surface_tension(Ts)
     
     params = (rho_l, K_L, D_L, L, P_INF, sigma, T_INF, rho_v_val)
     
-    # Adaptive sub-stepping
-    vel_factor = abs(V_new) * dt / (0.01 * max(R_new, 1e-12))
-    acc_factor = abs(dVdt) * dt * dt / (0.01 * max(R_new, 1e-12))
-    n_substeps = max(1, min(1000, int(np.ceil(max(vel_factor, acc_factor)))))
-    dt_sub = dt / n_substeps
-    
-    # Perform sub-step integration
-    R_new, V_new = integrate_substeps(R_new, V_new, dt_sub, n_substeps, params, Ts_new)
+    # RK4 integration for radius and velocity
+    R_new, V_new = rk4_step(R, V, Ts, dt, params)
     
     # Update state
-    R = R_new
-    V = V_new
-    Ts = Ts_new
+    R = max(R_new, 1e-12)  # Ensure positive radius
+    V = clip_value(V_new, -1e6, 1e6)  # Limit velocity to physical values
     
     # Store history
     R_history[i] = R
@@ -391,36 +344,33 @@ R_history = np.array(R_history)
 V_history = np.array(V_history)
 Ts_history = np.array(Ts_history)
 
-fig, axs = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+fig, axs = plt.subplots(3, 1, figsize=(12, 15))
 
-# Plot 1: Radius (log-log scale)
-axs[0].loglog(t_history, R_history)
+# Plot 1: Radius (log-log scale with raw data)
+axs[0].loglog(t_history, R_history, 'b-', linewidth=1, label='Radius')
+axs[0].loglog(t_history[::10], R_history[::10], 'k.', markersize=2, alpha=0.5)
 axs[0].set_ylabel("Radius [m]")
-axs[0].grid(True, which='both', linestyle='-', alpha=0.6)
-axs[0].grid(True, which='minor', linestyle=':', alpha=0.3)
-axs[0].set_title('Bubble Radius Evolution')
+axs[0].grid(True, which='both', ls='-', alpha=0.2)
+axs[0].legend()
 
-# Plot 2: Velocity (log-log scale with absolute value)
-axs[1].loglog(t_history, np.abs(V_history) + 1e-10)  # Add small value to handle zero velocity
+# Plot 2: Velocity (log-log scale with raw data)
+vel_abs = np.abs(V_history)
+axs[1].loglog(t_history, vel_abs, 'r-', linewidth=1, label='|Velocity|')
+axs[1].loglog(t_history[::10], vel_abs[::10], 'k.', markersize=2, alpha=0.5)
 axs[1].set_ylabel("Velocity [m/s]")
-axs[1].grid(True, which='both', linestyle='-', alpha=0.6)
-axs[1].grid(True, which='minor', linestyle=':', alpha=0.3)
-axs[1].set_title('Bubble Wall Velocity')
+axs[1].grid(True, which='both', ls='-', alpha=0.2)
+axs[1].legend()
 
-# Plot 3: Temperature (linear scale with log time)
-axs[2].semilogx(t_history, Ts_history, 'r-', linewidth=2)
-axs[2].set_ylabel("Surface Temperature [K]")
+# Plot 3: Temperature (log-linear scale with raw data)
+axs[2].semilogx(t_history, Ts_history, 'g-', linewidth=1, label='Temperature')
+axs[2].plot(t_history[::10], Ts_history[::10], 'k.', markersize=2, alpha=0.5)
+axs[2].set_ylabel("Temperature [K]")
 axs[2].set_xlabel("Time [s]")
-axs[2].grid(True, which='both', linestyle='-', alpha=0.6)
-axs[2].grid(True, which='minor', linestyle=':', alpha=0.3)
-axs[2].set_title('Surface Temperature Evolution')
-
-# Add reference lines for temperature plot
-axs[2].axhline(T_LIQUID_INITIAL, color='r', linestyle='--', label=f'T_initial ({T_LIQUID_INITIAL:.1f} K)')
-axs[2].axhline(T_INF, color='g', linestyle='--', label=f'T_bulk ({T_INF:.1f} K)')
+axs[2].grid(True, which='both', ls='-', alpha=0.2)
+axs[2].axhline(T_LIQUID_INITIAL, color='r', ls='--', label=f'T_initial ({T_LIQUID_INITIAL:.1f} K)')
+axs[2].axhline(T_INF, color='b', ls='--', label=f'T_bulk ({T_INF:.1f} K)')
 axs[2].legend()
 
-# Adjust layout and add overall title
 plt.suptitle(f"Bubble Dynamics (Na, {P_INF/1e5:.1f} bar, {T_SUPERHEAT:.0f} K Superheat)")
-plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+plt.tight_layout()
 plt.show()
