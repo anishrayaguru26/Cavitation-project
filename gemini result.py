@@ -228,7 +228,7 @@ def get_adaptive_dt(t, R, V, T_s):
 @jit(nopython=True)
 def rayleigh_plesset_optimized(R, V, t, T_s, params):
     """
-    Rayleigh-Plesset equation with improved temperature and growth effects
+    Rayleigh-Plesset equation with improved stability and physics
     """
     rho_l, k, D, L, p_inf, sigma, T_inf, rho_v = params
     
@@ -239,27 +239,31 @@ def rayleigh_plesset_optimized(R, V, t, T_s, params):
     sigma_val = get_surface_tension(T_s)
     mu = get_dynamic_viscosity(T_s)
     
-    # Reduced superheat effect
-    p_vapor = p_v * (1.0 + 0.02 * (T_s - T_inf)/T_inf)
+    # Enhanced superheat effect
+    p_vapor = p_v * (1.0 + 0.05 * (T_s - T_inf)/T_inf)  # Increased temperature sensitivity
     
-    # Modified thermal pressure term
-    p_thermal = 0.5 * rho_v * L_val * (T_s - T_inf) / T_s
+    # Improved thermal pressure term
+    p_thermal = rho_v * L_val * (T_s - T_inf) / T_s  # Full thermal pressure contribution
     
     # Surface tension with temperature dependence
     p_surface = 2 * sigma_val / R
     
-    # Enhanced viscous effects for better damping
+    # Enhanced viscous damping
     p_viscous = 4 * mu * V / R
     
-    # Growth limiting based on Weber number
-    We = rho_l * R * V * V / sigma_val
-    f_We = 1.0 / (1.0 + 0.05 * We)  # Stronger growth limiting
+    # Growth limiting based on modified Weber number
+    We = rho_l * R * abs(V) * abs(V) / sigma_val  # Using absolute velocity
+    f_We = 1.0 / (1.0 + 0.01 * We)  # Reduced growth limiting
     
-    # Total pressure difference
-    delta_p = (p_vapor + p_thermal - p_inf - p_surface) * f_We - p_viscous
+    # Total pressure difference with growth enhancement for small radii
+    r_ratio = R / R_crit
+    growth_enhancement = np.exp(-0.1 * r_ratio)  # Enhanced growth for small bubbles
     
-    # Acceleration with added stability term
-    dVdt = (delta_p / (rho_l * R)) - (3 * V * V)/(2 * R)
+    delta_p = ((p_vapor + p_thermal - p_inf - p_surface) * f_We * (1.0 + growth_enhancement) 
+               - p_viscous)
+    
+    # Modified acceleration term with improved stability
+    dVdt = (delta_p / (rho_l * R)) - (3 * V * abs(V))/(2 * R)  # Using abs(V) for better damping
     
     return V, dVdt
 
@@ -331,30 +335,42 @@ def integrate_bubble_dynamics(t, R, V, T_s, dt, params):
     R_new = R + (dt/6) * (k1_V + 2*k2_V + 2*k3_V + k4_V)
     V_new = V + (dt/6) * (k1_A + 2*k2_A + 2*k3_A + k4_A)
     
-    # Physical bounds matching paper scale
-    R_max = 3e-4  # Reduced maximum radius (0.3 mm)
-    R_new = max(R_crit/2, min(R_new, R_max))
-    V_new = clip_value(V_new, -50.0, 50.0)  # Tighter velocity limits
+    # Physical bounds matching paper scale with gradual limiting
+    R_max = 5e-4  # Increased maximum radius (0.5 mm)
+    R_min = 1e-8  # Increased minimum radius
+    R_new = max(R_min, min(R_new, R_max))
+    
+    # Smoother velocity limiting
+    V_max = 100.0  # Increased velocity limit
+    V_new = clip_value(V_new, -V_max, V_max)
     
     return R_new, V_new
 
+# Modified timestep calculation
 @jit(nopython=True)
 def calculate_timestep(R, V, T_s, t):
     """
-    Adaptive timestep calculation considering all relevant timescales
+    Adaptive timestep calculation with enhanced stability
     """
-    # Thermal timescale
-    tau_th = R * R / D_L
+    # All relevant timescales
+    tau_th = R * R / D_L  # Thermal
+    tau_i = R / (abs(V) + 1e-10)  # Inertial
+    tau_int = np.sqrt(RHO_L * R**3 / (2 * SIGMA))  # Interface
     
-    # Inertial timescale
-    tau_i = R / (abs(V) + 1e-10)
+    # Get viscosity for viscous timescale
+    mu = get_dynamic_viscosity(T_s)
+    tau_v = mu / (delta_p_init + 1e-10)  # Viscous
     
-    # Interface timescale
-    tau_int = np.sqrt(RHO_L * R**3 / (2 * SIGMA))
-    
-    # Use smallest timescale with safety factor
-    dt = 0.1 * min(tau_th, tau_i, tau_int)
-    return clip_value(dt, 1e-12, 1e-4)
+    # Progressive safety factor
+    if t < 1e-7:
+        safety = 0.001
+    elif t < 1e-6:
+        safety = 0.01
+    else:
+        safety = 0.1
+        
+    dt = safety * min(tau_th, tau_i, tau_int, tau_v)
+    return clip_value(dt, 1e-15, 1e-6)
 
 # ---------------------------------------------------------------------
 # 1. Physical Constants and Initial Conditions
@@ -393,10 +409,10 @@ delta_p_init = p_total_init - P_INF
 # Initial radius from paper with growth enhancement
 R_crit = 2 * SIGMA / delta_p_init
 R0 = 2.5e-5  # m (matches paper Case 1)
-V0 = 0.1  # Larger initial perturbation to match paper
+V0 = 0.01  # Reduced initial velocity
 
 # Time parameters optimized for early growth capture
-t_start = 1e-8
+t_start = 1e-9  # Earlier start time
 t_end = 1.0
 n_steps = 15000  # More steps for better resolution
 max_steps = int(1.2 * n_steps)  # Add buffer for adaptive timestepping
@@ -405,7 +421,7 @@ max_steps = int(1.2 * n_steps)  # Add buffer for adaptive timestepping
 tau_th = R0 * R0 / D_L  # Thermal time
 tau_i = np.sqrt(RHO_L * R0**3 / (2 * SIGMA))  # Inertial time
 tau_v = R0 / np.sqrt(delta_p_init / RHO_L)  # Vapor pressure time
-dt_init = min(tau_th, tau_i, tau_v) / 200  # Smaller initial timestep
+dt_init = 1e-12  # Smaller initial timestep
 
 # Initialize simulation arrays with buffer
 t_history = np.zeros(max_steps)
