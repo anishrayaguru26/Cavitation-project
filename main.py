@@ -183,7 +183,7 @@ def get_vapor_pressure(T):
     return P
 
 @jit(nopython=True)
-def calculate_Ts_updated(t, times, radii, T_inf, k, D, rho_v, superheat):
+def calculate_Ts_optimized(t, times, radii, T_inf, k, D, rho_v, superheat):
     """
     Calculate surface temperature T_s using the corrected integral equation
     """
