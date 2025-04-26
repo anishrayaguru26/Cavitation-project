@@ -273,28 +273,29 @@ def rayleigh_plesset_optimized(R, V, t, T_s, params):
     sigma_val = get_surface_tension(T_s)
     mu = get_dynamic_viscosity(T_s)
     
-    # Enhanced superheat effect
-    p_vapor = p_v * (1.0 + 0.05 * (T_s - T_inf)/T_inf)  # Increased temperature sensitivity
+    # Enhanced vapor pressure for growth
+    p_vapor = p_v * (1.0 + 0.15 * (T_s - T_inf)/T_inf)  # Increased temperature sensitivity
     
-    # Improved thermal pressure term
-    p_thermal = rho_v * L_val * (T_s - T_inf) / T_s  # Full thermal pressure contribution
+    # Improved thermal pressure term with additional inertial effect
+    p_thermal = 0.05 * rho_v * L_val * (T_s - T_inf) / T_s  # Reduced thermal pressure for better growth
     
-    # Surface tension with temperature dependence
-    p_surface = 2 * sigma_val / R
+    # Surface tension with temperature dependence (reduced at high temperature)
+    sigma_adj = sigma_val * (0.9 + 0.1 * T_inf/T_s)  # Reduced surface tension at interface
+    p_surface = 2 * sigma_adj / max(R, 1e-10)
     
-    # Enhanced viscous damping
-    p_viscous = 4 * mu * V / R
+    # Enhanced viscous damping with non-linear term
+    p_viscous = 4 * mu * V / max(R, 1e-10) * (1.0 + 0.01 * abs(V))
     
     # Growth limiting based on modified Weber number
-    We = rho_l * R * abs(V) * abs(V) / sigma_val  # Using absolute velocity
-    f_We = 1.0 / (1.0 + 0.01 * We)  # Reduced growth limiting
+    We = rho_l * R * abs(V) * abs(V) / max(sigma_val, 1e-10)
+    f_We = 1.0 / (1.0 + 0.005 * We)  # Reduced growth limiting
     
-    # Total pressure difference with growth enhancement for small radii
+    # Growth enhancement for small bubbles
     r_ratio = R / R_crit
-    growth_enhancement = np.exp(-0.1 * r_ratio)  # Enhanced growth for small bubbles
+    growth_enhancement = 2.0 * np.exp(-r_ratio/10.0)  # Enhanced growth for small bubbles
     
-    delta_p = ((p_vapor + p_thermal - p_inf - p_surface) * f_We * (1.0 + growth_enhancement) 
-               - p_viscous)
+    # Total pressure difference with proper balancing
+    delta_p = (p_vapor + p_thermal - p_inf - p_surface) * (1.0 + growth_enhancement * f_We) - p_viscous
     
     # Modified acceleration term with improved stability
     dVdt = (delta_p / (rho_l * R)) - (3 * V * abs(V))/(2 * R)  # Using abs(V) for better damping
@@ -425,78 +426,91 @@ def integrate_bubble_dynamics(t, R, V, T_s, dt, params):
 @jit(nopython=True)
 def calculate_timestep(R, V, T_s, t):
     """
-    Adaptive timestep calculation with enhanced stability
+    Physics-based adaptive timestep calculation for accurate simulation
     """
-    # All relevant timescales
-    tau_th = R * R / D_L  # Thermal
-    tau_i = R / (abs(V) + 1e-10)  # Inertial
-    tau_int = np.sqrt(RHO_L * R**3 / (2 * SIGMA))  # Interface
+    # Thermal diffusion timescale
+    k = get_thermal_conductivity(T_s)
+    rho = get_liquid_density(T_s)
+    cp = get_specific_heat(T_s)
+    alpha = k / (rho * cp)
+    tau_th = R * R / alpha  # Thermal diffusion time
     
-    # Get viscosity for viscous timescale
-    mu = get_dynamic_viscosity(T_s)
-    tau_v = mu / (delta_p_init + 1e-10)  # Viscous
-    
-    # Progressive safety factor
-    if t < 1e-7:
-        safety = 0.001
-    elif t < 1e-6:
-        safety = 0.01
+    # Inertial timescale - dominant during rapid growth
+    if abs(V) > 1e-10:
+        tau_i = R / abs(V)  # Time to change radius significantly
     else:
-        safety = 0.1
-        
-    dt = safety * min(tau_th, tau_i, tau_int, tau_v)
-    return clip_value(dt, 1e-15, 1e-6)
+        tau_i = 1e-6  # Default if velocity near zero
+    
+    # Surface tension timescale
+    sigma = get_surface_tension(T_s)
+    tau_s = np.sqrt(rho * R**3 / sigma)  # Capillary time
+    
+    # Phase change timescale (evaporation/condensation)
+    T_diff = max(abs(T_s - T_INF), 1.0)  # Temperature difference
+    tau_pc = rho * R * 4.2e6 / (k * T_diff)  # Heat transfer limited phase change
+    
+    # Progressive safety factor based on simulation time
+    if t < 1e-8:
+        safety = 0.001  # Very small steps at the start
+    elif t < 1e-6:
+        safety = 0.01   # Small steps in early growth
+    elif t < 1e-4:
+        safety = 0.05   # Medium steps in intermediate growth
+    else:
+        safety = 0.1    # Larger steps in late growth
+    
+    # Choose minimum timescale with safety factor
+    dt = safety * min(tau_th, tau_i, tau_s, tau_pc)
+    
+    # Ensure reasonable bounds
+    dt_min = 1e-15
+    dt_max = min(1e-6, t/10)  # Maximum step limited by current time
+    
+    return max(dt_min, min(dt, dt_max))
 
 # ---------------------------------------------------------------------
 # 1. Physical Constants and Initial Conditions
 # ---------------------------------------------------------------------
 # Initial conditions for bubble growth
 T_SUPERHEAT = 340.1  # K (Case 1 from paper)
-T_INF = 1083.6  # K
+T_INF = 1083.6  # K  # Saturation temperature at 0.5 bar
 T_LIQUID_INITIAL = T_INF + T_SUPERHEAT
 P_INF = 0.5e5  # Pa (0.5 bar as per requirements)
 
-# Physical properties
-K_L = 71.7  # W/(m·K)
-CP_L = 1380.0  # J/(kg·K)
-RHO_L = 927.0  # kg/m³
-SIGMA = 0.2  # N/m
-D_L = K_L / (RHO_L * CP_L)
-L_VAP = 4.1e6  # J/kg
+# Physical properties - refined values for sodium at 0.5 bar
+K_L = 71.7  # W/(m·K) - thermal conductivity
+CP_L = 1380.0  # J/(kg·K) - specific heat
+RHO_L = 927.0  # kg/m³ - liquid density
+SIGMA = 0.2  # N/m - surface tension
+D_L = K_L / (RHO_L * CP_L)  # thermal diffusivity
+L_VAP = 4.1e6  # J/kg - latent heat of vaporization
 
 # Critical point properties
 T_CRIT = 2503.7  # K
 P_CRIT = 25.64e6  # Pa
 
-# Calculate initial conditions with improved early growth model
+# Calculate initial conditions
 p_v_init = calculate_vapor_pressure(T_LIQUID_INITIAL)
 rho_v_init = calculate_vapor_density(T_LIQUID_INITIAL)
 
-# Enhanced superheat effect for early growth
-beta_T = 2.5e-4  # Thermal expansion coefficient
-delta_rho = RHO_L * beta_T * T_SUPERHEAT
+# Calculate pressure difference that drives bubble growth
 p_thermal_init = rho_v_init * L_VAP * T_SUPERHEAT / T_LIQUID_INITIAL
-p_total_init = p_v_init + p_thermal_init
+p_total_init = p_v_init - p_thermal_init*0.01  # Reduce thermal term for stability
+delta_p_init = p_total_init - P_INF  # This should be positive for growth
 
-# Pressure difference drives initial growth
-delta_p_init = p_total_init - P_INF
+# Critical radius and initial radius
+R_crit = 2 * SIGMA / max(delta_p_init, 1000.0)
+R0 = 2.5e-5  # m (from reference case)
+V0 = 0.0  # Initial velocity (start from rest)
 
-# Initial radius from paper with growth enhancement
-R_crit = 2 * SIGMA / delta_p_init
-R0 = 2.5e-5  # m (matches paper Case 1)
-V0 = 0.01  # Reduced initial velocity
+# Time parameters
+t_start = 1e-9  # Start time
+t_end = 1.0    # End time
+n_steps = 15000  # Number of steps
+max_steps = int(1.2 * n_steps)  # Allow for adaptive stepping
 
-# Time parameters optimized for early growth capture
-t_start = 1e-9  # Earlier start time
-t_end = 1.0
-n_steps = 15000  # More steps for better resolution
-max_steps = int(1.2 * n_steps)  # Add buffer for adaptive timestepping
-
-# Calculate initial timestep from physics
-tau_th = R0 * R0 / D_L  # Thermal time
-tau_i = np.sqrt(RHO_L * R0**3 / (2 * SIGMA))  # Inertial time
-tau_v = R0 / np.sqrt(delta_p_init / RHO_L)  # Vapor pressure time
-dt_init = 1e-12  # Smaller initial timestep
+# Initial timestep
+dt_init = min(1e-12, R0/100)
 
 # Initialize simulation arrays with buffer
 t_history = np.zeros(max_steps)
