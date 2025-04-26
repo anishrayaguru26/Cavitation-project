@@ -66,7 +66,7 @@ def dSdt(t, S):
     return [dRdt, d2Rdt2, dTsdt]
 
 class ProgressIVP:
-    """Wrapper for solve_ivp that shows a progress bar during integration."""
+    """Wrapper for solve_ivp that shows a progress bar during integration, including time."""
     
     def __init__(self, fun, t_span, y0, t_eval=None, **kwargs):
         self.fun = fun
@@ -82,7 +82,11 @@ class ProgressIVP:
         """Wrapper function that counts calls to the ODE function."""
         self.t_steps.append(t)
         self.n_steps += 1
-        progress_bar.update(1)  # Update progress bar
+        
+        # Update progress bar with current time and steps
+        progress_bar.set_description(f"t = {t:.2e} s | steps = {self.n_steps}")
+        progress_bar.update(1)
+        
         return self.fun(t, y)
     
     def solve(self, max_steps=10000):
@@ -93,7 +97,7 @@ class ProgressIVP:
         
         print(f"Starting simulation with estimated {max_steps} steps...")
         global progress_bar
-        progress_bar = tqdm(total=max_steps, desc="Solving ODEs")
+        progress_bar = tqdm(total=max_steps, desc="Solving ODEs", dynamic_ncols=True)
         
         result = solve_ivp(
             self.wrapper, 
@@ -108,32 +112,63 @@ class ProgressIVP:
         
         return result
 
-def solve_bubble_dynamics():
-    """Solve the bubble dynamics equations and return results."""
-    # Initial conditions: [R, dR/dt, T_s]
-    S0 = [R_initial, dRdt_initial, T_inf]
+
+def solve_stage(t_start, t_end, S0, rtol, atol, t_points):
+    """Solve a single stage with custom tolerances and points."""
+    t_span = [t_start, t_end]
+    t_eval = np.logspace(np.log10(t_start), np.log10(t_end), t_points)
     
-    # Time span for integration - extended for complete bubble growth
-    # Using a much wider range to capture the full dynamics
-    t_span = [1e-9, 1e0]
-    
-    # Time points (logarithmically spaced for better resolution of early dynamics)
-    t_eval = np.logspace(-9, 0, 1000)
-    
-    # Solve the system of ODEs with progress bar
     solver = ProgressIVP(
-        dSdt, 
-        t_span, 
-        S0, 
+        dSdt,
+        t_span,
+        S0,
         t_eval=t_eval,
         method='RK45',
-        rtol=1e-6,
-        atol=1e-9
+        rtol=rtol,
+        atol=atol
     )
     
-    solution = solver.solve(max_steps=20000)
-    
+    solution = solver.solve(max_steps=3000)
     return solution
+
+def solve_bubble_dynamics_two_stage():
+    """Solve the bubble dynamics equations using two-stage fast approach."""
+    print("Starting two-stage simulation...")
+    
+    # Stage 1: Early time (critical phase)
+    print("Stage 1: Early time dynamics...")
+    S0 = [R_initial, dRdt_initial, T_inf]
+    sol1 = solve_stage(
+        t_start=1e-9,
+        t_end=1e-5,
+        S0=S0,
+        rtol=1e-6,
+        atol=1e-9,
+        t_points=300
+    )
+    
+    # Stage 2: Later time (bubble already formed)
+    print("Stage 2: Later time dynamics...")
+    S0_stage2 = [sol1.y[0][-1], sol1.y[1][-1], sol1.y[2][-1]]  # Last values from Stage 1
+    sol2 = solve_stage(
+        t_start=1e-5,
+        t_end=1e0,
+        S0=S0_stage2,
+        rtol=1e-5,
+        atol=1e-8,
+        t_points=300
+    )
+    
+    # Combine results
+    t_combined = np.concatenate((sol1.t, sol2.t))
+    y_combined = np.hstack((sol1.y, sol2.y))
+    
+    class CombinedSolution:
+        t = t_combined
+        y = y_combined
+        success = sol1.success and sol2.success
+        
+    return CombinedSolution()
 
 def plot_results(solution):
     """Create plots for R vs t, dR/dt vs t, and T_s vs t."""
@@ -175,21 +210,21 @@ def plot_results(solution):
     plt.show()
 
 def main():
-    """Main function to run the simulation."""
-    print("Solving Rayleigh-Plesset equation for vapor bubble in liquid sodium...")
+    """Main function to run the two-stage fast simulation."""
+    print("Solving Rayleigh-Plesset equation for vapor bubble in liquid sodium (TWO-STAGE FAST MODE)...")
     print(f"Initial temperature: {T_inf} K")
     print(f"Superheat: {T_inf - T_b} K")
     print(f"Ambient pressure: {p_inf/1e5} bar")
     
-    solution = solve_bubble_dynamics()
+    solution = solve_bubble_dynamics_two_stage()
     
     if solution.success:
         print("Simulation completed successfully!")
         plot_results(solution)
         
         # Print some key results
-        max_radius = np.max(solution.y[0]) * 1000  # Convert to mm
-        max_velocity = np.max(solution.y[1]) * 100  # Convert to cm/s
+        max_radius = np.max(solution.y[0]) * 1000  # mm
+        max_velocity = np.max(solution.y[1]) * 100  # cm/s
         min_temperature = np.min(solution.y[2])
         
         print(f"\nResults summary:")
@@ -197,7 +232,7 @@ def main():
         print(f"Maximum growth rate: {max_velocity:.3f} cm/s")
         print(f"Minimum surface temperature: {min_temperature:.1f} K")
     else:
-        print("Simulation failed:", solution.message)
+        print("Simulation failed!")
 
 if __name__ == "__main__":
     main()

@@ -108,30 +108,29 @@ class ProgressIVP:
         
         return result
 
-def solve_bubble_dynamics():
-    """Solve the bubble dynamics equations and return results."""
+def solve_bubble_dynamics_fast():
+    """Solve the bubble dynamics equations faster with relaxed tolerances."""
     # Initial conditions: [R, dR/dt, T_s]
     S0 = [R_initial, dRdt_initial, T_inf]
     
-    # Time span for integration - extended for complete bubble growth
-    # Using a much wider range to capture the full dynamics
+    # Time span for integration
     t_span = [1e-9, 1e0]
     
-    # Time points (logarithmically spaced for better resolution of early dynamics)
-    t_eval = np.logspace(-9, 0, 1000)
+    # Time points (optional: fewer points)
+    t_eval = np.logspace(-9, 0, 500)  # 500 points instead of 1000
     
-    # Solve the system of ODEs with progress bar
+    # Solve the system of ODEs
     solver = ProgressIVP(
         dSdt, 
         t_span, 
         S0, 
         t_eval=t_eval,
         method='RK45',
-        rtol=1e-6,
-        atol=1e-9
+        rtol=1e-5,   # Relaxed relative tolerance
+        atol=1e-8    # Relaxed absolute tolerance
     )
     
-    solution = solver.solve(max_steps=20000)
+    solution = solver.solve(max_steps=5000)  # Also relax max_steps guess
     
     return solution
 
@@ -175,13 +174,13 @@ def plot_results(solution):
     plt.show()
 
 def main():
-    """Main function to run the simulation."""
-    print("Solving Rayleigh-Plesset equation for vapor bubble in liquid sodium...")
+    """Main function to run the faster simulation."""
+    print("Solving Rayleigh-Plesset equation for vapor bubble in liquid sodium (FAST MODE)...")
     print(f"Initial temperature: {T_inf} K")
     print(f"Superheat: {T_inf - T_b} K")
     print(f"Ambient pressure: {p_inf/1e5} bar")
     
-    solution = solve_bubble_dynamics()
+    solution = solve_bubble_dynamics_fast()
     
     if solution.success:
         print("Simulation completed successfully!")
