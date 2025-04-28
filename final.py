@@ -45,7 +45,7 @@ fluids = {
                     'R_gas': 361.5,        # gas constant of sodium vapor (J/kg/K)
                     'sigma': 0.16,         # surface tension (N/m) at 0.5 atm
                     'eta_l': 0,            # dynamic viscosity (Pa.s)
-                    'T_sat': 1100,         # saturation temperature (K) at 0.5 atm
+                    'T_sat': 1107,         # saturation temperature (K) at 0.5 atm
                     'beta': 1000           # thermal enhancement factor (assumed)
                 }
             },
@@ -63,7 +63,7 @@ fluids = {
                     'R_gas': 361.5,        # gas constant of sodium vapor (J/kg/K)
                     'sigma': 0.158,        # surface tension (N/m) at 2 atm
                     'eta_l': 0,            # dynamic viscosity (Pa.s)
-                    'T_sat': 1250,         # saturation temperature (K) at 2 atm
+                    'T_sat': 1253,         # saturation temperature (K) at 2 atm
                     'beta': 1000           # thermal enhancement factor (assumed)
                 }
             },
@@ -81,7 +81,7 @@ fluids = {
                     'R_gas': 361.5,        # gas constant of sodium vapor (J/kg/K)
                     'sigma': 0.155,        # surface tension (N/m) at 4.5 atm
                     'eta_l': 0,            # dynamic viscosity (Pa.s)
-                    'T_sat': 1350,         # saturation temperature (K) at 4.5 atm
+                    'T_sat': 1352,         # saturation temperature (K) at 4.5 atm
                     'beta': 1000           # thermal enhancement factor (assumed)
                 }
             }
