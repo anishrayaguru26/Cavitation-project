@@ -214,6 +214,10 @@ def run_simulation_and_plot(selected_fluids=['water']):
         non_dim_radius_figs[fluid_type] = plt.figure(figsize=(10, 8))
         non_dim_velocity_figs[fluid_type] = plt.figure(figsize=(10, 8))
     
+    # Also create combined non-dimensional figures
+    combined_non_dim_radius_fig = plt.figure(figsize=(10, 8))
+    combined_non_dim_velocity_fig = plt.figure(figsize=(10, 8))
+    
     # Keep track of all cases to include in legends
     all_cases = []
     
@@ -307,6 +311,13 @@ def run_simulation_and_plot(selected_fluids=['water']):
             # Plot non-dimensional velocity vs non-dimensional time on fluid-specific figure
             plt.figure(non_dim_velocity_figs[fluid_type].number)
             plt.plot(non_dim_times, non_dim_velocities, label=name, color=color)
+            
+            # Also plot on combined figures
+            plt.figure(combined_non_dim_radius_fig.number)
+            plt.plot(non_dim_times, non_dim_radii, label=name, color=color)
+            
+            plt.figure(combined_non_dim_velocity_fig.number)
+            plt.plot(non_dim_times, non_dim_velocities, label=name, color=color)
     
     # Finalize radius plot
     plt.figure(radius_fig.number)
@@ -358,12 +369,31 @@ def run_simulation_and_plot(selected_fluids=['water']):
         plt.tight_layout()
         plt.savefig(f'non_dim_velocity_{fluid_type}.png', dpi=300)
     
-    return radius_fig, velocity_fig, non_dim_radius_figs, non_dim_velocity_figs
-
-# Time span for simulation
-t_span = (1e-9, 1e-4)
-points = 5000
-t_eval = np.logspace(np.log10(t_span[0]), np.log10(t_span[1]), points)
+    # Finalize combined non-dimensional radius plot
+    plt.figure(combined_non_dim_radius_fig.number)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Non-dimensional time $\\tilde{t} = \\alpha \\mu^2 t$')
+    plt.ylabel('Non-dimensional radius $\\tilde{R} = \\mu^2 R/R_0$')
+    plt.title('Non-dimensional Bubble Radius Growth - All Cases')
+    plt.grid(True, which='both', ls='--')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('non_dim_radius_combined.png', dpi=300)
+    
+    # Finalize combined non-dimensional velocity plot
+    plt.figure(combined_non_dim_velocity_fig.number)
+    plt.xscale('log')
+    plt.ylim(0, 1.0)  # Based on expected maximum non-dimensional velocity
+    plt.xlabel('Non-dimensional time $\\tilde{t} = \\alpha \\mu^2 t$')
+    plt.ylabel('Non-dimensional velocity $\\frac{d\\tilde{R}}{d\\tilde{t}}$')
+    plt.title('Non-dimensional Bubble Wall Velocity - All Cases')
+    plt.grid(True, which='both', ls='--')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('non_dim_velocity_combined.png', dpi=300)
+    
+    return radius_fig, velocity_fig, non_dim_radius_figs, non_dim_velocity_figs, combined_non_dim_radius_fig, combined_non_dim_velocity_fig
 
 # Run the simulation with both fluids
 if __name__ == "__main__":

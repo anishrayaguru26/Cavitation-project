@@ -207,30 +207,8 @@ def run_simulation_and_plot(selected_fluids=['water']):
     radius_fig = plt.figure(figsize=(10, 8))
     velocity_fig = plt.figure(figsize=(10, 8))
     
-    # Create separate non-dimensional figures for each fluid
-    non_dim_radius_figs = {}
-    non_dim_velocity_figs = {}
-    for fluid_type in selected_fluids:
-        non_dim_radius_figs[fluid_type] = plt.figure(figsize=(10, 8))
-        non_dim_velocity_figs[fluid_type] = plt.figure(figsize=(10, 8))
-    
     # Keep track of all cases to include in legends
     all_cases = []
-    
-    # Define non-dimensional parameters for each case
-    # Format: [fluid_type, Delta_T, p_inf_bar, mu, alpha]
-    non_dim_params = {
-        'water': {
-            20: {'mu': 5.324, 'alpha': 7e8},
-            50: {'mu': 4.756, 'alpha': 8e8},
-            100: {'mu': 5.491, 'alpha': 9e8}
-        },
-        'sodium': {
-            340: {'mu': 0.000403, 'alpha': 1e8},
-            90: {'mu': 0.00463, 'alpha': 1.03e7},
-            15: {'mu': 0.0501, 'alpha': 3e6}
-        }
-    } #Taken from Plesset's paper
     
     # Process each selected fluid
     for fluid_type in selected_fluids:
@@ -290,23 +268,6 @@ def run_simulation_and_plot(selected_fluids=['water']):
             # Plot velocity vs time
             plt.figure(velocity_fig.number)
             plt.plot(times, velocities, label=name, color=color)
-            
-            # Get non-dimensional parameters for this case
-            mu = non_dim_params[fluid_type][Delta_T]['mu']
-            alpha = non_dim_params[fluid_type][Delta_T]['alpha']
-            
-            # Calculate non-dimensional results
-            non_dim_radii = (mu**2) * radii / R0
-            non_dim_times = alpha * (mu**2) * times
-            non_dim_velocities = velocities / (alpha * R0)
-            
-            # Plot non-dimensional radius vs non-dimensional time on fluid-specific figure
-            plt.figure(non_dim_radius_figs[fluid_type].number)
-            plt.plot(non_dim_times, non_dim_radii, label=name, color=color)
-            
-            # Plot non-dimensional velocity vs non-dimensional time on fluid-specific figure
-            plt.figure(non_dim_velocity_figs[fluid_type].number)
-            plt.plot(non_dim_times, non_dim_velocities, label=name, color=color)
     
     # Finalize radius plot
     plt.figure(radius_fig.number)
@@ -332,38 +293,7 @@ def run_simulation_and_plot(selected_fluids=['water']):
     plt.tight_layout()
     plt.savefig('bubble_velocity_vs_time.png', dpi=300)
     
-    # Finalize fluid-specific non-dimensional plots
-    for fluid_type in selected_fluids:
-        # Radius plots
-        plt.figure(non_dim_radius_figs[fluid_type].number)
-        plt.xscale('log')
-        plt.yscale('log')
-        plt.xlabel('Non-dimensional time $\\tilde{t} = \\alpha \\mu^2 t$')
-        plt.ylabel('Non-dimensional radius $\\tilde{R} = \\mu^2 R/R_0$')
-        plt.title(f'Non-dimensional Bubble Radius Growth - {fluid_type.capitalize()}')
-        plt.grid(True, which='both', ls='--')
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(f'non_dim_radius_{fluid_type}.png', dpi=300)
-        
-        # Velocity plots
-        plt.figure(non_dim_velocity_figs[fluid_type].number)
-        plt.xscale('log')
-        plt.ylim(0, 1.0)  # Based on expected maximum non-dimensional velocity
-        plt.xlabel('Non-dimensional time $\\tilde{t} = \\alpha \\mu^2 t$')
-        plt.ylabel('Non-dimensional velocity $\\frac{d\\tilde{R}}{d\\tilde{t}}$')
-        plt.title(f'Non-dimensional Bubble Wall Velocity - {fluid_type.capitalize()}')
-        plt.grid(True, which='both', ls='--')
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(f'non_dim_velocity_{fluid_type}.png', dpi=300)
-    
-    return radius_fig, velocity_fig, non_dim_radius_figs, non_dim_velocity_figs
-
-# Time span for simulation
-t_span = (1e-9, 1e-4)
-points = 5000
-t_eval = np.logspace(np.log10(t_span[0]), np.log10(t_span[1]), points)
+    return radius_fig, velocity_fig
 
 # Run the simulation with both fluids
 if __name__ == "__main__":
