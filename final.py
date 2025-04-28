@@ -32,25 +32,65 @@ fluids = {
     },
     'sodium': {
         'cases': [
-            {'name': 'Na 0.5atm 340K', 'p_inf': 0.5*1.013e5, 'Delta_T': 340, 'color': 'red'},
-            {'name': 'Na 2atm 90K', 'p_inf': 2*1.013e5, 'Delta_T': 90, 'color': 'purple'},
-            {'name': 'Na 4.5atm 15K', 'p_inf': 4.5*1.013e5, 'Delta_T': 15, 'color': 'brown'}
+            {
+                'name': 'Na 0.5atm 340K', 
+                'p_inf': 0.5*1.013e5, 
+                'Delta_T': 340, 
+                'color': 'red',
+                # Pressure-specific properties for 0.5 atm
+                'properties': {
+                    'rho_l': 756,          # liquid sodium density (kg/m³) at 0.5 atm
+                    'c_l': 1261,           # specific heat capacity (J/kg/K) at 0.5 atm
+                    'lambda_l': 60,        # thermal conductivity (W/m/K) at 0.5 atm
+                    'L': 4e6,              # latent heat (J/kg) at 0.5 atm - will use interpolation
+                    'R_gas': 361.5,        # gas constant of sodium vapor (J/kg/K)
+                    'sigma': 0.16,         # surface tension (N/m) at 0.5 atm
+                    'eta_l': 0,            # dynamic viscosity (Pa.s)
+                    'T_sat': 1100,         # saturation temperature (K) at 0.5 atm
+                    'c_v': 900,            # specific heat at constant volume (J/kg/K)
+                    'beta': 1000           # thermal enhancement factor (assumed)
+                }
+            },
+            {
+                'name': 'Na 2atm 90K', 
+                'p_inf': 2*1.013e5, 
+                'Delta_T': 90, 
+                'color': 'purple',
+                # Pressure-specific properties for 2 atm
+                'properties': {
+                    'rho_l': 719,          # liquid sodium density (kg/m³) at 2 atm
+                    'c_l': 1292,           # specific heat capacity (J/kg/K) at 2 atm
+                    'lambda_l': 62,        # thermal conductivity (W/m/K) at 2 atm
+                    'L': 4.1e6,            # latent heat (J/kg) at 2 atm - will use interpolation
+                    'R_gas': 361.5,        # gas constant of sodium vapor (J/kg/K)
+                    'sigma': 0.158,        # surface tension (N/m) at 2 atm
+                    'eta_l': 0,            # dynamic viscosity (Pa.s)
+                    'T_sat': 1250,         # saturation temperature (K) at 2 atm
+                    'c_v': 900,            # specific heat at constant volume (J/kg/K)
+                    'beta': 1000           # thermal enhancement factor (assumed)
+                }
+            },
+            {
+                'name': 'Na 4.5atm 15K', 
+                'p_inf': 4.5*1.013e5, 
+                'Delta_T': 15, 
+                'color': 'brown',
+                # Pressure-specific properties for 4.5 atm
+                'properties': {
+                    'rho_l': 693,          # liquid sodium density (kg/m³) at 4.5 atm
+                    'c_l': 1340,           # specific heat capacity (J/kg/K) at 4.5 atm
+                    'lambda_l': 64,        # thermal conductivity (W/m/K) at 4.5 atm
+                    'L': 4.2e6,            # latent heat (J/kg) at 4.5 atm - will use interpolation
+                    'R_gas': 361.5,        # gas constant of sodium vapor (J/kg/K)
+                    'sigma': 0.155,        # surface tension (N/m) at 4.5 atm
+                    'eta_l': 0,            # dynamic viscosity (Pa.s)
+                    'T_sat': 1350,         # saturation temperature (K) at 4.5 atm
+                    'c_v': 900,            # specific heat at constant volume (J/kg/K)
+                    'beta': 1000           # thermal enhancement factor (assumed)
+                }
+            }
         ],
-        'properties': {
-            # You'll need to update these with actual sodium properties
-            'rho_l': 800,          # placeholder for liquid sodium density (kg/m³)
-            'c_l': 1300,           # placeholder for specific heat capacity (J/kg/K)
-            'lambda_l': 60,        # placeholder for thermal conductivity (W/m/K)
-            'L': 4e6,              # placeholder for latent heat (J/kg)
-            'R_gas': 361.5,        # placeholder for gas constant of sodium vapor (J/kg/K)
-            'sigma': 0.16,         # placeholder for surface tension (N/m)
-            'eta_l': 0,            # placeholder for dynamic viscosity (Pa.s)
-            'T_sat': 1156,         # placeholder for saturation temperature (K)
-            'c_v': 900,            # placeholder for specific heat at constant volume (J/kg/K)
-            'beta': 1000           # thermal enhancement factor (assumed)
-        },
         'initial_radii': {
-            # Placeholders for sodium initial radii (you'll need to adjust these)
             340: 3e-6,
             90: 3e-7,
             15: 8e-8
@@ -82,7 +122,6 @@ water_latent_heat_interp = interp1d(
     kind='linear', bounds_error=False, fill_value=(water_latent_heat_kJ_per_kg[0]*1000, 0)
 )
 
-# TODO: Add sodium latent heat interpolation data
 # This is a placeholder - you'll need to add actual sodium data
 sodium_temperature_K = np.array([800, 900, 1000, 1100, 1156, 1200, 1300, 1400])
 sodium_latent_heat_kJ_per_kg = np.array([4500, 4400, 4300, 4200, 4100, 4000, 3800, 3600])
@@ -179,7 +218,6 @@ def run_simulation_and_plot(selected_fluids=['water']):
     for fluid_type in selected_fluids:
         fluid = fluids[fluid_type]
         cases = fluid['cases']
-        properties = fluid['properties']
         initial_radii = fluid['initial_radii']
         
         # Process each case for the current fluid
@@ -187,7 +225,19 @@ def run_simulation_and_plot(selected_fluids=['water']):
             # Set up parameters for this case
             p_inf = case['p_inf']
             Delta_T = case['Delta_T']
-            T_sat = properties['T_sat']
+            
+            # Get properties based on fluid type
+            if fluid_type == 'water':
+                # For water, use the global properties
+                properties = fluid['properties'].copy()
+                properties['p_inf'] = p_inf  # Update pressure
+                T_sat = properties['T_sat']
+            else:  # for sodium
+                # For sodium, each case has its own properties
+                properties = case['properties'].copy()
+                properties['p_inf'] = p_inf  # Ensure pressure is set
+                T_sat = properties['T_sat']
+            
             T_inf = T_sat + Delta_T
             color = case['color']
             name = case['name']
@@ -201,16 +251,12 @@ def run_simulation_and_plot(selected_fluids=['water']):
             T_s0 = T_sat
             rho_v0 = p_inf / (properties['R_gas'] * T_sat)  # initial vapor density
             
-            # Copy properties and update pressure for this case
-            case_properties = properties.copy()
-            case_properties['p_inf'] = p_inf
-            
             # Initial conditions vector: [R, R_dot, rho_v, T_s]
             y0 = [R0, R_dot0, rho_v0, T_s0]
             
             # Solve the ODE system
             sol = solve_ivp(
-                lambda t, y: bubble_odes(t, y, fluid_type, case_properties, T_inf), 
+                lambda t, y: bubble_odes(t, y, fluid_type, properties, T_inf), 
                 t_span, y0, t_eval=t_eval, method='Radau', rtol=1e-6, atol=1e-9
             )
             
