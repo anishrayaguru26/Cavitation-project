@@ -349,7 +349,7 @@ def run_simulation_and_plot(selected_fluids=['water']):
         # Velocity plots
         plt.figure(non_dim_velocity_figs[fluid_type].number)
         plt.xscale('log')
-        plt.ylim(0, 1.0)  # Based on expected maximum non-dimensional velocity
+        plt.ylim(0, 4.0)  # Based on expected maximum non-dimensional velocity
         plt.xlabel('Non-dimensional time $\\tilde{t} = \\alpha \\mu^2 t$')
         plt.ylabel('Non-dimensional velocity $\\frac{d\\tilde{R}}{d\\tilde{t}}$')
         plt.title(f'Non-dimensional Bubble Wall Velocity - {fluid_type.capitalize()}')
