@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.integrate import solve_ivp
+from scipy.interpolate import interp1d
+from tqdm import tqdm  # Import tqdm for progress bar
 
 # Physical constants for water
 rho_l = 958.4        # liquid density (kg/m³)
@@ -30,13 +32,49 @@ R0_dict = {
 rho_v0 = p_inf / (R_gas * T_sat)  # assume initial pressure ~ ambient pressure
 
 # Time span
-t_span = (1e-9, 1e-4)
-points = 300000
+t_span = (1e-9, 1000)
+points = 3000
 t_eval = np.logspace(np.log10(t_span[0]), np.log10(t_span[1]), points)
 
 # Different initial superheating values (K)
 Delta_T_list = [20, 50, 100]
 colors = ['blue', 'orange', 'green']
+
+temperature_K = np.array([
+    273.15, 275, 280, 285, 290, 295, 300, 305, 310, 315, 320,
+    325, 330, 335, 340, 345, 350, 355, 360, 365, 370, 373.15,
+    375, 380, 385, 390, 400, 410, 420, 430, 440, 450, 460, 470,
+    480, 490, 500, 510, 520, 530, 540, 550, 560, 570, 580, 590,
+    600, 610, 620, 625, 630, 635, 640, 645, 647.3
+])
+
+# Latent heat in kJ/kg
+latent_heat_kJ_per_kg = np.array([
+    2502, 2497, 2485, 2473, 2461, 2449, 2438, 2426, 2414, 2402, 2390,
+    2378, 2366, 2354, 2342, 2329, 2317, 2304, 2291, 2278, 2265, 2257,
+    2252, 2239, 2225, 2212, 2183, 2153, 2123, 2091, 2059, 2024, 1989,
+    1951, 1912, 1870, 1825, 1779, 1730, 1679, 1622, 1564, 1499, 1429,
+    1353, 1274, 1176, 1068, 941, 858, 781, 683, 560, 361, 0
+])
+
+# Create interpolation function
+latent_heat_interp = interp1d(
+    temperature_K, latent_heat_kJ_per_kg * 1000,  # Convert to J/kg
+    kind='linear', bounds_error=False, fill_value=(latent_heat_kJ_per_kg[0]*1000, 0)
+)
+
+def latent_heat_water_interp(T_celsius):
+    """
+    Interpolated latent heat of vaporization for water based on temperature (°C).
+    
+    Args:
+        T_celsius (float): Temperature in degrees Celsius.
+        
+    Returns:
+        float: Latent heat in J/kg.
+    """
+    T_kelvin = T_celsius + 273.15
+    return latent_heat_interp(T_kelvin)
 
 # Define the system of ODEs
 def bubble_odes(t, y, T_inf):
@@ -47,7 +85,9 @@ def bubble_odes(t, y, T_inf):
 
     # Temperature gradient at interface (assuming quasi-steady conduction)
     dTdr = (T_inf - T_s) / R
-
+     
+    L = latent_heat_water_interp(T_s - 273.15)  # Latent heat at interface temperature
+    #print(L,T_s)
     # Mass flux at the interface
     j = lambda_l * dTdr / L
 
@@ -79,7 +119,8 @@ def bubble_odes(t, y, T_inf):
 # Plotting
 plt.figure(figsize=(10,8))
 
-for Delta_T, color in zip(Delta_T_list, colors):
+# Use tqdm to create a progress bar for the superheating values
+for Delta_T, color in tqdm(list(zip(Delta_T_list, colors)), desc="Processing superheating values"):
     T_inf = T_sat + Delta_T  # set liquid far-field temperature
 
     # Initial surface temperature assumed very close to T_sat
@@ -115,7 +156,7 @@ plt.savefig('bubble_radius_vs_time.png', dpi=300)
 # Create a new figure for velocity plot
 plt.figure(figsize=(10,8))
 
-for Delta_T, color in zip(Delta_T_list, colors):
+for Delta_T, color in tqdm(list(zip(Delta_T_list, colors)), desc="Processing velocity plots"):
     T_inf = T_sat + Delta_T  # set liquid far-field temperature
     
     # Initial surface temperature assumed very close to T_sat
@@ -146,6 +187,40 @@ plt.tight_layout()
 
 # Save the velocity plot
 plt.savefig('bubble_velocity_vs_time.png', dpi=300)
+
+# Create a new figure for temperature plot
+plt.figure(figsize=(10,8))
+
+for Delta_T, color in tqdm(list(zip(Delta_T_list, colors)), desc="Processing temperature plots"):
+    T_inf = T_sat + Delta_T  # set liquid far-field temperature
+    
+    # Initial surface temperature assumed very close to T_sat
+    T_s0 = T_sat
+    
+    # Initial conditions: [R, R_dot, rho_v, T_s]
+    y0 = [R0_dict[Delta_T], R_dot0, rho_v0, T_s0]
+    
+    # Solve
+    sol = solve_ivp(lambda t, y: bubble_odes(t, y, T_inf), t_span, y0, t_eval=t_eval, method='Radau', rtol=1e-6, atol=1e-9)
+    
+    # Extract results
+    times = sol.t
+    Temperatures = sol.y[3]  # T_s values
+    
+    # Plot T_s vs. Time
+    plt.plot(times, Temperatures, label=rf'$\Delta T_i$ = {Delta_T} K', color=color)
+
+# Final plot settings for temperature plot
+plt.xscale('log')
+plt.xlabel('Time (s)')
+plt.ylabel('Bubble surface temperature (K)')
+plt.title('Bubble Surface Temperature in Superheated Liquid')
+plt.grid(True, which='both', ls='--')
+plt.legend()
+plt.tight_layout()
+
+# Save the temperature plot
+plt.savefig('T_vs_t.png', dpi=300)
 
 # Display the plots
 plt.show()
