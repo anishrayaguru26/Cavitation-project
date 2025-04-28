@@ -32,8 +32,8 @@ R0_dict = {
 rho_v0 = p_inf / (R_gas * T_sat)  # assume initial pressure ~ ambient pressure
 
 # Time span
-t_span = (1e-9, 1000)
-points = 3000
+t_span = (1e-9, 1)
+points = 5000
 t_eval = np.logspace(np.log10(t_span[0]), np.log10(t_span[1]), points)
 
 # Different initial superheating values (K)
