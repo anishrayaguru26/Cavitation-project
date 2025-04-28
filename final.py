@@ -164,14 +164,8 @@ def bubble_odes(t, y, fluid_type, properties, T_inf):
     if R <= 0:
         return [0, 0, 0, 0]
 
-    # Calculate thermal diffusivity
-    alpha = lambda_l / (rho_l * c_l)
-    
-    # Calculate characteristic length scale for diffusion using beta enhancement factor
-    Grad_dist = beta * np.sqrt(np.pi * alpha * t)
-    
-    # Enhanced temperature gradient at interface with thermal diffusion effects
-    dTdr = (T_inf - T_s) / Grad_dist
+    # Temperature gradient at interface (assuming quasi-steady conduction)
+    dTdr = (T_inf - T_s) / R
      
     # Get latent heat at interface temperature
     L = get_latent_heat(fluid_type, T_s)
@@ -196,14 +190,16 @@ def bubble_odes(t, y, fluid_type, properties, T_inf):
     drho_v_dt = (3 * (j - rho_v * v_lR)) / R
 
     # Energy conservation at the interface (liquid side energy loss)
+    alpha = lambda_l / (rho_l * c_l)  # thermal diffusivity of liquid
+    Grad_dist = beta * np.sqrt(np.pi * alpha * t)  # characteristic length scale for diffusion
     dT_s_dt = (lambda_l / (rho_l * c_l)) * ((T_inf - T_s) / (Grad_dist**2)) - ((v_lR) * ((T_inf - T_s)/Grad_dist))
 
     return [dR_dt, R_ddot, drho_v_dt, dT_s_dt]
 
-# Calculate mass flux for given conditions
+# Calculate mass flux for given conditions (matches bubble_odes implementation)
 def calculate_mass_flux(t, R, T_s, fluid_type, properties, T_inf):
     """
-    Calculate the mass flux at the bubble interface
+    Calculate the mass flux at the bubble interface using the same formula as in bubble_odes
     
     Args:
         t (float): Time
@@ -218,23 +214,14 @@ def calculate_mass_flux(t, R, T_s, fluid_type, properties, T_inf):
     """
     # Extract needed properties
     lambda_l = properties['lambda_l']
-    beta = properties['beta']
-    rho_l = properties['rho_l']
-    c_l = properties['c_l']
     
-    # Calculate thermal diffusivity
-    alpha = lambda_l / (rho_l * c_l)
-    
-    # Calculate characteristic length scale for diffusion using beta enhancement factor
-    Grad_dist = beta * np.sqrt(np.pi * alpha * t)
-    
-    # Enhanced temperature gradient at interface with thermal diffusion effects
-    dTdr = (T_inf - T_s) / Grad_dist
+    # Temperature gradient at interface (same as in bubble_odes)
+    dTdr = (T_inf - T_s) / R
     
     # Get latent heat at interface temperature
     L = get_latent_heat(fluid_type, T_s)
     
-    # Mass flux at the interface
+    # Mass flux at the interface (same formula as in bubble_odes)
     j = lambda_l * dTdr / L
     
     return j
@@ -276,6 +263,10 @@ def run_simulation_and_plot(selected_fluids=['water']):
         }
     } #Taken from Plesset's paper
     
+    # Count total cases for progress tracking
+    total_cases = sum(len(fluids[fluid]['cases']) for fluid in selected_fluids)
+    case_count = 0
+    
     # Process each selected fluid
     for fluid_type in selected_fluids:
         fluid = fluids[fluid_type]
@@ -283,10 +274,12 @@ def run_simulation_and_plot(selected_fluids=['water']):
         initial_radii = fluid['initial_radii']
         
         # Process each case for the current fluid
-        for case in tqdm(cases, desc=f"Processing {fluid_type} cases"):
+        for case in cases:
+            case_count += 1
             # Set up parameters for this case
             p_inf = case['p_inf']
             Delta_T = case['Delta_T']
+            name = case['name']
             
             # Get properties based on fluid type
             if fluid_type == 'water':
@@ -302,7 +295,6 @@ def run_simulation_and_plot(selected_fluids=['water']):
             
             T_inf = T_sat + Delta_T
             color = case['color']
-            name = case['name']
             
             # Add this case to our tracking list
             all_cases.append(case)
@@ -316,11 +308,23 @@ def run_simulation_and_plot(selected_fluids=['water']):
             # Initial conditions vector: [R, R_dot, rho_v, T_s]
             y0 = [R0, R_dot0, rho_v0, T_s0]
             
-            # Solve the ODE system
-            sol = solve_ivp(
-                lambda t, y: bubble_odes(t, y, fluid_type, properties, T_inf), 
-                t_span, y0, t_eval=t_eval, method='Radau', rtol=1e-6, atol=1e-9
-            )
+            # Show detailed progress
+            print(f"[{case_count}/{total_cases}] Solving for {name} (ΔT={Delta_T}K, P={p_inf/1.013e5:.2f} atm)")
+            
+            # Solve the ODE system with tqdm to show progress during integration
+            with tqdm(total=100, desc=f"Integration progress", bar_format='{l_bar}{bar:30}{r_bar}') as pbar:
+                def progress_callback(t, y):
+                    # Update progress bar based on current time in the simulation
+                    progress = min(100, int(100 * (np.log10(t) - np.log10(t_span[0])) / 
+                                          (np.log10(t_span[1]) - np.log10(t_span[0]))))
+                    pbar.update(progress - pbar.n)
+                    return False  # Continue integration
+                
+                sol = solve_ivp(
+                    lambda t, y: bubble_odes(t, y, fluid_type, properties, T_inf), 
+                    t_span, y0, t_eval=t_eval, method='Radau', rtol=1e-6, atol=1e-9,
+                    events=progress_callback
+                )
             
             # Extract results
             times = sol.t
@@ -329,6 +333,7 @@ def run_simulation_and_plot(selected_fluids=['water']):
             temperatures = sol.y[3]
             
             # Calculate mass flux for each time step
+            print(f"Calculating mass flux values for {name}...")
             mass_fluxes = [calculate_mass_flux(t, R, T_s, fluid_type, properties, T_inf) 
                            for t, R, T_s in zip(times, radii, temperatures)]
             
@@ -360,6 +365,8 @@ def run_simulation_and_plot(selected_fluids=['water']):
             # Plot non-dimensional velocity vs non-dimensional time on fluid-specific figure
             plt.figure(non_dim_velocity_figs[fluid_type].number)
             plt.plot(non_dim_times, non_dim_velocities, label=name, color=color)
+            
+            print(f"Completed {name} ({case_count}/{total_cases})\n")
     
     # Finalize radius plot
     plt.figure(radius_fig.number)
@@ -423,6 +430,7 @@ def run_simulation_and_plot(selected_fluids=['water']):
         plt.tight_layout()
         plt.savefig(f'non_dim_velocity_{fluid_type}.png', dpi=300)
     
+    print("All simulations and plots completed successfully!")
     return radius_fig, velocity_fig, mass_flux_fig, non_dim_radius_figs, non_dim_velocity_figs
 
 # Time span for simulation
