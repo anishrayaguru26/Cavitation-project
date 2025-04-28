@@ -4,43 +4,62 @@ from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 from tqdm import tqdm  # Import tqdm for progress bar
 
-# Physical constants for water
-rho_l = 958.4        # liquid density (kg/m³)
-c_l = 4216           # specific heat capacity of liquid (J/kg/K)
-lambda_l = 0.68      # thermal conductivity of liquid (W/m/K)
-L = 2.257e6          # latent heat of vaporization (J/kg)
-R_gas = 461.5        # specific gas constant for water vapor (J/kg/K)
-sigma = 0.0589       # surface tension (N/m)
-eta_l = 0#2.82e-4      # dynamic viscosity (Pa.s)
-p_inf = 1.013e5      # ambient pressure (Pa)
-T_sat = 373.15       # saturation temperature at 1 atm (K)
-
-# Specific heat at constant volume for vapor (approximate for water vapor)
-c_v = 1418  # J/kg/K
-
-# Initial bubble radius - will be set based on Delta_T
-R_dot0 = 0.0 # initial bubble wall velocity
-
-# Initial bubble radii for different superheating values based on the graph
-R0_dict = {
-    20: 3e-6,    # 3 micrometers for ΔT = 10K
-    50: 3e-7,    # 300 nanometers for ΔT = 50K
-    100: 8e-8    # 80 nanometers for ΔT = 100K
+# Define fluid properties and simulation cases
+fluids = {
+    'water': {
+        'cases': [
+            {'name': 'Water 20K', 'p_inf': 1.013e5, 'Delta_T': 20, 'color': 'blue'},
+            {'name': 'Water 50K', 'p_inf': 1.013e5, 'Delta_T': 50, 'color': 'orange'},
+            {'name': 'Water 100K', 'p_inf': 1.013e5, 'Delta_T': 100, 'color': 'green'}
+        ],
+        'properties': {
+            'rho_l': 958.4,        # liquid density (kg/m³)
+            'c_l': 4216,           # specific heat capacity of liquid (J/kg/K)
+            'lambda_l': 0.68,      # thermal conductivity of liquid (W/m/K)
+            'L': 2.257e6,          # latent heat of vaporization (J/kg) - will use the interpolation function
+            'R_gas': 461.5,        # specific gas constant for vapor (J/kg/K)
+            'sigma': 0.0589,       # surface tension (N/m)
+            'eta_l': 0,            # dynamic viscosity (Pa.s)
+            'T_sat': 373.15,       # saturation temperature at 1 atm (K)
+            'c_v': 1418,           # specific heat at constant volume for vapor (J/kg/K)
+            'beta': 1000           # thermal enhancement factor (assumed)
+        },
+        'initial_radii': {
+            20: 3e-6,    # 3 micrometers for ΔT = 20K
+            50: 3e-7,    # 300 nanometers for ΔT = 50K
+            100: 8e-8    # 80 nanometers for ΔT = 100K
+        }
+    },
+    'sodium': {
+        'cases': [
+            {'name': 'Na 0.5atm 340K', 'p_inf': 0.5*1.013e5, 'Delta_T': 340, 'color': 'red'},
+            {'name': 'Na 2atm 90K', 'p_inf': 2*1.013e5, 'Delta_T': 90, 'color': 'purple'},
+            {'name': 'Na 4.5atm 15K', 'p_inf': 4.5*1.013e5, 'Delta_T': 15, 'color': 'brown'}
+        ],
+        'properties': {
+            # You'll need to update these with actual sodium properties
+            'rho_l': 800,          # placeholder for liquid sodium density (kg/m³)
+            'c_l': 1300,           # placeholder for specific heat capacity (J/kg/K)
+            'lambda_l': 60,        # placeholder for thermal conductivity (W/m/K)
+            'L': 4e6,              # placeholder for latent heat (J/kg)
+            'R_gas': 361.5,        # placeholder for gas constant of sodium vapor (J/kg/K)
+            'sigma': 0.16,         # placeholder for surface tension (N/m)
+            'eta_l': 0,            # placeholder for dynamic viscosity (Pa.s)
+            'T_sat': 1156,         # placeholder for saturation temperature (K)
+            'c_v': 900,            # placeholder for specific heat at constant volume (J/kg/K)
+            'beta': 1000           # thermal enhancement factor (assumed)
+        },
+        'initial_radii': {
+            # Placeholders for sodium initial radii (you'll need to adjust these)
+            340: 3e-6,
+            90: 3e-7,
+            15: 8e-8
+        }
+    }
 }
 
-# Initial vapor density
-rho_v0 = p_inf / (R_gas * T_sat)  # assume initial pressure ~ ambient pressure
-
-# Time span
-t_span = (1e-9, 1)
-points = 5000
-t_eval = np.logspace(np.log10(t_span[0]), np.log10(t_span[1]), points)
-
-# Different initial superheating values (K)
-Delta_T_list = [20, 50, 100]
-colors = ['blue', 'orange', 'green']
-
-temperature_K = np.array([
+# Water latent heat interpolation data
+water_temperature_K = np.array([
     273.15, 275, 280, 285, 290, 295, 300, 305, 310, 315, 320,
     325, 330, 335, 340, 345, 350, 355, 360, 365, 370, 373.15,
     375, 380, 385, 390, 400, 410, 420, 430, 440, 450, 460, 470,
@@ -49,7 +68,7 @@ temperature_K = np.array([
 ])
 
 # Latent heat in kJ/kg
-latent_heat_kJ_per_kg = np.array([
+water_latent_heat_kJ_per_kg = np.array([
     2502, 2497, 2485, 2473, 2461, 2449, 2438, 2426, 2414, 2402, 2390,
     2378, 2366, 2354, 2342, 2329, 2317, 2304, 2291, 2278, 2265, 2257,
     2252, 2239, 2225, 2212, 2183, 2153, 2123, 2091, 2059, 2024, 1989,
@@ -57,28 +76,55 @@ latent_heat_kJ_per_kg = np.array([
     1353, 1274, 1176, 1068, 941, 858, 781, 683, 560, 361, 0
 ])
 
-# Create interpolation function
-latent_heat_interp = interp1d(
-    temperature_K, latent_heat_kJ_per_kg * 1000,  # Convert to J/kg
-    kind='linear', bounds_error=False, fill_value=(latent_heat_kJ_per_kg[0]*1000, 0)
+# Create interpolation function for water
+water_latent_heat_interp = interp1d(
+    water_temperature_K, water_latent_heat_kJ_per_kg * 1000,  # Convert to J/kg
+    kind='linear', bounds_error=False, fill_value=(water_latent_heat_kJ_per_kg[0]*1000, 0)
 )
 
-def latent_heat_water_interp(T_celsius):
+# TODO: Add sodium latent heat interpolation data
+# This is a placeholder - you'll need to add actual sodium data
+sodium_temperature_K = np.array([800, 900, 1000, 1100, 1156, 1200, 1300, 1400])
+sodium_latent_heat_kJ_per_kg = np.array([4500, 4400, 4300, 4200, 4100, 4000, 3800, 3600])
+
+# Create interpolation function for sodium
+sodium_latent_heat_interp = interp1d(
+    sodium_temperature_K, sodium_latent_heat_kJ_per_kg * 1000,  # Convert to J/kg
+    kind='linear', bounds_error=False, fill_value=(sodium_latent_heat_kJ_per_kg[0]*1000, sodium_latent_heat_kJ_per_kg[-1]*1000)
+)
+
+# Function to get latent heat based on fluid type and temperature
+def get_latent_heat(fluid_type, temperature_K):
     """
-    Interpolated latent heat of vaporization for water based on temperature (°C).
+    Get latent heat for a given fluid at a specific temperature.
     
     Args:
-        T_celsius (float): Temperature in degrees Celsius.
+        fluid_type (str): 'water' or 'sodium'
+        temperature_K (float): Temperature in Kelvin
         
     Returns:
-        float: Latent heat in J/kg.
+        float: Latent heat in J/kg
     """
-    T_kelvin = T_celsius + 273.15
-    return latent_heat_interp(T_kelvin)
+    if fluid_type == 'water':
+        return water_latent_heat_interp(temperature_K)
+    elif fluid_type == 'sodium':
+        return sodium_latent_heat_interp(temperature_K)
+    else:
+        raise ValueError(f"Unknown fluid type: {fluid_type}")
 
 # Define the system of ODEs
-def bubble_odes(t, y, T_inf):
+def bubble_odes(t, y, fluid_type, properties, T_inf):
     R, R_dot, rho_v, T_s = y
+    
+    # Extract fluid properties
+    rho_l = properties['rho_l']
+    c_l = properties['c_l']
+    lambda_l = properties['lambda_l']
+    R_gas = properties['R_gas']
+    sigma = properties['sigma']
+    eta_l = properties['eta_l']
+    p_inf = properties['p_inf']
+    beta = properties['beta']
 
     if R <= 0:
         return [0, 0, 0, 0]
@@ -86,8 +132,9 @@ def bubble_odes(t, y, T_inf):
     # Temperature gradient at interface (assuming quasi-steady conduction)
     dTdr = (T_inf - T_s) / R
      
-    L = latent_heat_water_interp(T_s - 273.15)  # Latent heat at interface temperature
-    #print(L,T_s)
+    # Get latent heat at interface temperature
+    L = get_latent_heat(fluid_type, T_s)
+    
     # Mass flux at the interface
     j = lambda_l * dTdr / L
 
@@ -108,119 +155,111 @@ def bubble_odes(t, y, T_inf):
     drho_v_dt = (3 * (j - rho_v * v_lR)) / R
 
     # Energy conservation at the interface (liquid side energy loss)
-    #Grad_dist = 10*R
     alpha = lambda_l / (rho_l * c_l)  # thermal diffusivity of liquid
-    beta = 1000 #thermal enhancement factor (assumed)
-    Grad_dist = beta*np.sqrt(np.pi * alpha * t)  # characteristic length scale for diffusion
+    Grad_dist = beta * np.sqrt(np.pi * alpha * t)  # characteristic length scale for diffusion
     dT_s_dt = (lambda_l / (rho_l * c_l)) * ((T_inf - T_s) / (Grad_dist**2)) - ((v_lR) * ((T_inf - T_s)/Grad_dist))
 
     return [dR_dt, R_ddot, drho_v_dt, dT_s_dt]
 
-# Plotting
-plt.figure(figsize=(10,8))
+# Time span for simulation
+t_span = (1e-9, 1)
+points = 5000
+t_eval = np.logspace(np.log10(t_span[0]), np.log10(t_span[1]), points)
 
-# Use tqdm to create a progress bar for the superheating values
-for Delta_T, color in tqdm(list(zip(Delta_T_list, colors)), desc="Processing superheating values"):
-    T_inf = T_sat + Delta_T  # set liquid far-field temperature
-
-    # Initial surface temperature assumed very close to T_sat
-    T_s0 = T_sat
-
-    # Initial conditions: [R, R_dot, rho_v, T_s]
-    y0 = [R0_dict[Delta_T], R_dot0, rho_v0, T_s0]
-
-    # Solve
-    sol = solve_ivp(lambda t, y: bubble_odes(t, y, T_inf), t_span, y0, t_eval=t_eval, method='RK45', rtol=1e-6, atol=1e-9)
-
-    # Extract results
-    times = sol.t
-    Radii = sol.y[0]
-    Velocities = sol.y[1]  # dR/dt values
-
-    # Plot Radius vs. Time
-    plt.plot(times, Radii, label=rf'$\Delta T_i$ = {Delta_T} K', color=color)
-
-# Final plot settings for radius plot
-plt.xscale('log')
-plt.yscale('log')
-plt.xlabel('Time (s)')
-plt.ylabel('Bubble radius (m)')
-plt.title('Bubble Growth in Superheated Liquid (with Mass & Energy Transfer)')
-plt.grid(True, which='both', ls='--')
-plt.legend()
-plt.tight_layout()
-
-# Save the radius plot
-plt.savefig('bubble_radius_vs_time.png', dpi=300)
-
-# Create a new figure for velocity plot
-plt.figure(figsize=(10,8))
-
-for Delta_T, color in tqdm(list(zip(Delta_T_list, colors)), desc="Processing velocity plots"):
-    T_inf = T_sat + Delta_T  # set liquid far-field temperature
+# Function to run simulation and generate plots
+def run_simulation_and_plot(selected_fluids=['water']):
+    # Create figures for each plot type
+    radius_fig = plt.figure(figsize=(10, 8))
+    velocity_fig = plt.figure(figsize=(10, 8))
     
-    # Initial surface temperature assumed very close to T_sat
-    T_s0 = T_sat
+    # Keep track of all cases to include in legends
+    all_cases = []
     
-    # Initial conditions: [R, R_dot, rho_v, T_s]
-    y0 = [R0_dict[Delta_T], R_dot0, rho_v0, T_s0]
+    # Process each selected fluid
+    for fluid_type in selected_fluids:
+        fluid = fluids[fluid_type]
+        cases = fluid['cases']
+        properties = fluid['properties']
+        initial_radii = fluid['initial_radii']
+        
+        # Process each case for the current fluid
+        for case in tqdm(cases, desc=f"Processing {fluid_type} cases"):
+            # Set up parameters for this case
+            p_inf = case['p_inf']
+            Delta_T = case['Delta_T']
+            T_sat = properties['T_sat']
+            T_inf = T_sat + Delta_T
+            color = case['color']
+            name = case['name']
+            
+            # Add this case to our tracking list
+            all_cases.append(case)
+            
+            # Initial conditions
+            R0 = initial_radii[Delta_T]
+            R_dot0 = 0.0
+            T_s0 = T_sat
+            rho_v0 = p_inf / (properties['R_gas'] * T_sat)  # initial vapor density
+            
+            # Copy properties and update pressure for this case
+            case_properties = properties.copy()
+            case_properties['p_inf'] = p_inf
+            
+            # Initial conditions vector: [R, R_dot, rho_v, T_s]
+            y0 = [R0, R_dot0, rho_v0, T_s0]
+            
+            # Solve the ODE system
+            sol = solve_ivp(
+                lambda t, y: bubble_odes(t, y, fluid_type, case_properties, T_inf), 
+                t_span, y0, t_eval=t_eval, method='Radau', rtol=1e-6, atol=1e-9
+            )
+            
+            # Extract results
+            times = sol.t
+            radii = sol.y[0]
+            velocities = sol.y[1]
+            
+            # Plot radius vs time
+            plt.figure(radius_fig.number)
+            plt.plot(times, radii, label=name, color=color)
+            
+            # Plot velocity vs time
+            plt.figure(velocity_fig.number)
+            plt.plot(times, velocities, label=name, color=color)
     
-    # Solve
-    sol = solve_ivp(lambda t, y: bubble_odes(t, y, T_inf), t_span, y0, t_eval=t_eval, method='Radau', rtol=1e-6, atol=1e-9)
+    # Finalize radius plot
+    plt.figure(radius_fig.number)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Bubble radius (m)')
+    plt.title('Bubble Growth in Superheated Liquid (with Mass & Energy Transfer)')
+    plt.grid(True, which='both', ls='--')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('bubble_radius_vs_time.png', dpi=300)
     
-    # Extract results
-    times = sol.t
-    Velocities = sol.y[1]  # dR/dt values
+    # Finalize velocity plot
+    plt.figure(velocity_fig.number)
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.xlabel('Time (s)')
+    plt.ylabel('Bubble wall velocity dR/dt (m/s)')
+    plt.title('Bubble Wall Velocity in Superheated Liquid (with Mass & Energy Transfer)')
+    plt.grid(True, which='both', ls='--')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('bubble_velocity_vs_time.png', dpi=300)
     
-    # Plot dR/dt vs. Time
-    plt.plot(times, Velocities, label=rf'$\Delta T_i$ = {Delta_T} K', color=color)
+    return radius_fig, velocity_fig
 
-# Final plot settings for velocity plot
-plt.xscale('log')
-plt.yscale('log')
-plt.xlabel('Time (s)')
-plt.ylabel('Bubble wall velocity dR/dt (m/s)')
-plt.title('Bubble Wall Velocity in Superheated Liquid (with Mass & Energy Transfer)')
-plt.grid(True, which='both', ls='--')
-plt.legend()
-plt.tight_layout()
-
-# Save the velocity plot
-plt.savefig('bubble_velocity_vs_time.png', dpi=300)
-
-# Create a new figure for temperature plot
-plt.figure(figsize=(10,8))
-
-for Delta_T, color in tqdm(list(zip(Delta_T_list, colors)), desc="Processing temperature plots"):
-    T_inf = T_sat + Delta_T  # set liquid far-field temperature
+# Run the simulation with both fluids
+if __name__ == "__main__":
+    # Run simulation for water only (original case)
+    # run_simulation_and_plot(['water'])
     
-    # Initial surface temperature assumed very close to T_sat
-    T_s0 = T_sat
+    # Run simulation for both water and sodium
+    run_simulation_and_plot(['water', 'sodium'])
     
-    # Initial conditions: [R, R_dot, rho_v, T_s]
-    y0 = [R0_dict[Delta_T], R_dot0, rho_v0, T_s0]
-    
-    # Solve
-    sol = solve_ivp(lambda t, y: bubble_odes(t, y, T_inf), t_span, y0, t_eval=t_eval, method='Radau', rtol=1e-6, atol=1e-9)
-    
-    # Extract results
-    times = sol.t
-    Temperatures = sol.y[3]  # T_s values
-    
-    # Plot T_s vs. Time
-    plt.plot(times, Temperatures, label=rf'$\Delta T_i$ = {Delta_T} K', color=color)
-
-# Final plot settings for temperature plot
-plt.xscale('log')
-plt.xlabel('Time (s)')
-plt.ylabel('Bubble surface temperature (K)')
-plt.title('Bubble Surface Temperature in Superheated Liquid')
-plt.grid(True, which='both', ls='--')
-plt.legend()
-plt.tight_layout()
-
-# Save the temperature plot
-plt.savefig('T_vs_t.png', dpi=300)
-
-# Display the plots
-plt.show()
+    # Display all plots
+    plt.show()
