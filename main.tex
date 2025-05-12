@@ -1,12 +1,310 @@
-\documentclass{article}
-\usepackage[utf8]{inputenc} % For UTF-8 encoding
-\usepackage{amsmath} % For mathematical symbols and formatting
+\documentclass[aps,pre,twocolumn,superscriptaddress,floatfix]{revtex4-2}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{physics}
+\usepackage{siunitx}
+\usepackage{ragged2e}
 
 \begin{document}
 
-\[
-R \frac{d^2 R}{d t^2} + \frac{3}{2} \left( \frac{d R}{d t} \right)^2 = \frac{1}{\rho} \left\{ p_{v}\left(T_{s}\right) - p_{\infty} - \frac{2 \sigma}{R} \right\}
-\]
+\title{Modeling Vapor Bubble Growth in Superheated Liquids: A Simulation}
+
+\author{Adwitiya Goyal ME22B098, Anish Rayaguru ME22B105}
+\affiliation{ME6123 Caviation Project}
+
+\date{\today}
+
+\begin{abstract}
+This paper presents a mathematical model of vapor bubble growth in an initially uniformly superheated liquid. The model simultaneously accounts for dynamic and thermal effects and includes the classical Rayleigh equation and heat conduction equations, adapted to capture specifics associated with evaporation processes. Validation against numerical solutions supports the accuracy of this approach.
+\end{abstract}
+
+\maketitle
+
+\section{Introduction}
+
+The growth of vapor bubbles in a superheated liquid has been extensively studied due to its importance in boiling heat transfer and two-phase flow dynamics. Despite assuming spherical symmetry, the problem remains complex, motivating approximate analytical models. Building on the work of Plesset and Zwick \cite{plesset1954}, this study aims to establish a physically grounded, scaled description of bubble growth, validated against numerical solutions by Dalle Donne and Ferranti \cite{dalle1975}.
+
+We primarily use two sources: one by Plesset and one by Chernov et al. Chernov's work attempts a semi-analytical solution to the numerical problem posed by Plesset. We use Chernov's equations to find numerical solutions aligned with Plesset's results.
+
+%ADD A COMMENT ON THE NEW PAPER OF SEMI ANALYTICAL SOLUTIOn
+
+\section{Physical Interpretation}
+
+The bubble growth process involves distinct stages dominated by different physical mechanisms:
+
+\subsection{Early Time Behavior (Inertia-Dominated Stage)}
+At the earliest stages, inertial effects dominate bubble growth, with rapid evaporation near the interface and significant surface tension effects. Thermal effects are minimal due to thin thermal boundary layers.
+
+\subsection{Intermediate Time Behavior (Transition Stage)}
+As the bubble grows, surface tension effects diminish, and mass transfer across the interface slows. Heat conduction becomes increasingly important, transitioning growth control from inertia to thermal diffusion.
+
+\subsection{Late Time Behavior (Thermal-Diffusion-Controlled Stage)}
+At late stages, bubble growth is fully controlled by heat conduction from the bulk liquid. The bubble wall velocity decreases as the available thermal energy flux diminishes.
+
+\section{Theory and Formulas}
+
+Subscripts $l$ and $v$ refer to the liquid and vapor phases, respectively. Subscript $R$ denotes values at the interface.
+
+\subsection*{Variable Definitions}
+\begin{itemize}
+    \item $R$ — Bubble radius
+    \item $\dot{R}$ — Bubble wall velocity
+    \item $\ddot{R}$ — Bubble wall acceleration
+    \item $\rho_l, \rho_v$ — Densities of liquid and vapor, respectively
+    \item $p_v$ — Vapor pressure inside the bubble
+    \item $p_{\infty}$ — Far-field (ambient) liquid pressure
+    \item $\sigma$ — Surface tension
+    \item $j$ — Mass flux across the interface (kg/m$^2$/s)
+    \item $A$ — Surface area of the bubble ($4 \pi R^2$)
+    \item $v_{lR}$ — Radial liquid velocity at the bubble interface
+    \item $\eta_l$ — Dynamic viscosity of the liquid
+    \item $p_{lR}$ — Pressure on the liquid side of the interface
+    \item $L$ — Latent heat of vaporization
+    \item $\lambda_l$ — Thermal conductivity of the liquid
+    \item $T_s$ — Interface (saturation) temperature
+    \item $T_{\infty}$ — Far-field liquid temperature
+    \item $\delta_T$ — Thermal boundary layer thickness
+    \item $T_l$ — Temperature in the liquid
+    \item $c_l$ — Specific heat of the liquid
+    \item $\alpha$ — Thermal diffusivity
+    \item $R_{\text{gas}}$ — Specific gas constant
+    \item $r$ — Radial coordinate
+    \item $t$ — Time
+\end{itemize}
+
+Rayleigh-type equation considering mass flux:
+\begin{equation}
+R \ddot{R} + \frac{3}{2} \dot{R}^2 = \frac{1}{\rho_l} \left( p_v - p_{\infty} - \frac{2\sigma}{R} \right) + \frac{j}{\rho_l} \dot{R} - \frac{1}{2} \left( \frac{j}{\rho_l} \right)^2
+\end{equation}
+
+Conservation of mass at the bubble interface:
+\begin{equation}
+\dot{V} = j \cdot A
+\end{equation}
+
+Rewritten as,
+\begin{equation}
+4 \pi R^2 (\rho_v \dot{R} - j) = 0
+\end{equation}
+
+Mass flux density $j$:
+\begin{equation}
+v_{lR} = \dot{R} - \frac{j}{\rho_l}
+\end{equation}
+
+Pressure balance at the bubble wall:
+\begin{equation}
+p_{lR} = p_v + j v_{lR} - \frac{2\sigma}{R} - 4 \eta_l \frac{v_{lR}}{R}
+\end{equation}
+
+Energy conservation at the interface:
+\begin{equation}
+L j = \lambda_l \left. \frac{\partial T}{\partial r} \right|_{r=R}
+\end{equation}
+
+Alternate form using the interface temperature gradient:
+\begin{equation}
+L j = \lambda_l \frac{T_{\infty} - T_s}{\delta_T}
+\end{equation}
+
+Temperature field governed by:
+\begin{equation}
+\frac{\partial T}{\partial t} = \alpha \nabla^2 T
+\end{equation}
+
+Boundary condition initial setup gives:
+\begin{equation}
+T(r,0) = T_{\infty} \quad \text{for all} \quad r \geq R(0)
+\end{equation}
+
+Also rewritten as:
+\begin{equation}
+\frac{\partial (\rho_l c_l T_l)}{\partial t}
++ v_l \frac{\partial (\rho_l c_l T_l)}{\partial r}
+= \frac{1}{r^2} \frac{\partial}{\partial r} \left( \lambda_l r^2 \frac{\partial T_l}{\partial r} \right)
+\end{equation}
+
+Gas state equation at the bubble wall:
+\begin{equation}
+p_v = \rho_v R_{\text{gas}} T_s
+\end{equation}
+
+Initial bubble radius estimation:
+\begin{equation}
+R_0 = \sqrt{ \frac{2\sigma}{p_{\infty} - p_v} }
+\end{equation}
+
+\section{Numerical Analysis}
+
+The initial radius is computed using the gas law and pressure balance conditions. A fourth-order Runge-Kutta method is used to integrate the system of equations.
+
+The simplified differential equations are:
+\begin{equation}
+\dv{T}{r} = \frac{T_{\infty} - T_s}{\beta R}
+\end{equation}
+
+\begin{equation}
+R \ddot{R} = \frac{p_{lR} - p_{\infty}}{\rho_l R} + \frac{v_{lR}^2}{2R} - \frac{2 v_{lR} \dot{R}}{R} - A
+\end{equation}
+
+\begin{equation}
+\dv{\rho_v}{t} = \frac{3(j - \rho_v v_{lR})}{R}
+\end{equation}
+
+Energy conservation with thermal correction factor $\beta$:
+\begin{equation}
+\dv{T_s}{t} = \alpha \left(\frac{T_{\infty} - T_s}{\text{Grad}_{\text{dist}}^2}\right) - v_{lR} \left(\frac{T_{\infty} - T_s}{\text{Grad}_{\text{dist}}}\right)
+\end{equation}
+
+Where
+\begin{equation}
+\text{Grad}_{\text{dist}} = \beta \sqrt{\pi \alpha t}
+\end{equation}
+
+
+\subsection{Thermal Correction Factor $\beta$}
+
+The correction factor $\beta$ is a thermal enhancement factor used to scale the thermal boundary layer thickness in the model. It reflects the assumption that the ambient superheated temperature $T_{\infty}$ is established at a distance approximately $\beta$ times the thermal diffusion depth $\sqrt{\pi \alpha t}$.
+
+Physically, this implies that $T_{\infty}$ is located much farther from the bubble interface---typically about three orders of magnitude beyond the vapor thermal boundary layer thickness. This assumption simplifies the application of boundary conditions and reflects the steep temperature gradient near the bubble wall in a highly localized region of heat transfer.
+
+Accurate selection of $\beta$ ensures that the modeled thermal profile correctly captures the limited spatial reach of thermal diffusion while still applying a constant far-field temperature boundary. In most practical cases, $\beta$ is taken to be around 1000 to adequately represent the thermal environment around a growing vapor bubble.
+
+where
+\begin{equation}
+\text{Grad}_{\text{dist}} = \beta \sqrt{\pi \alpha t}
+\end{equation}
+
+\section{Results and Discussion}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.45\textwidth]{Photos for cavitation/686b722f-906a-49fe-9610-cba9f73f6365.jpeg}
+    \caption{Bubble radius vs. time for superheated water and sodium under varying conditions, showing effects of mass and energy transfer.}
+    \label{fig:your_label}
+\end{figure}
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.45\textwidth]{Photos for cavitation/f799745e-45ae-4144-82b7-40f0b1ca6923.jpeg}
+    \caption{Time evolution of bubble wall velocity in superheated water and sodium under different conditions.}
+    \label{fig:your_label}
+\end{figure}
+
+
+Simulation details:
+\begin{itemize}
+    \item 5000 time points from $10^{-9}$ to $10^{-4}$ seconds.
+    \item Six case studies (Sodium and Water at varying pressures and superheats).
+\end{itemize}
+
+
+
+\subsection{Non-Dimensional Understanding}
+
+%why does the non dim time span vary for all 6 cases - and hence they fit along another curve described by raleigh
+\subsection{Non-dimensional Parameters $\mu$ and $\alpha$}
+
+The parameters $\mu$ and $\alpha$ are key non-dimensional quantities that vary only with the liquid superheat $T_{\infty} - T_b$.
+
+\paragraph{Growth coefficient $\mu$:} This parameter reflects the influence of thermal, physical, and interfacial properties on bubble expansion.
+\begin{equation}
+\mu = \frac{1}{3} \left( \frac{2 \sigma D}{\pi} \right)^{1/2} \frac{\rho_v L}{k (T_{\infty} - T_b)} \left\{ \rho [p_v(T_{\infty}) - p_{\infty}] \right\}^{-1/4} \tag{18}
+\end{equation}
+
+\paragraph{Superheat parameter $\alpha$:} This non-dimensional parameter represents the thermodynamic driving force for phase change:
+\begin{equation}
+\alpha = \frac{\left[ p_v(T_{\infty}) - p_{\infty} \right]^{3/2}}{2 \sigma \rho_l^{1/2}} \tag{19}
+\end{equation}
+
+These parameters are essential in characterizing bubble dynamics under different superheat conditions, particularly in scaling analyses and when interpreting numerical trends across fluids and pressures.
+
+To facilitate comparison across cases and collapse simulation results into a universal form, the radius and time are non-dimensionalized using $\mu$ and $\alpha$:
+\begin{equation}
+\tilde{R} = \frac{\mu^2 R}{R_0} \tag{20}
+\end{equation}
+\begin{equation}
+\tilde{t} = \alpha \mu^2 t \tag{21}
+\end{equation}
+
+Here, $\tilde{R}$ and $\tilde{t}$ represent the dimensionless bubble radius and time, respectively. These scalings highlight the influence of superheat and fluid properties on the growth dynamics in a generalized framework.
+
+The following table summarizes the values of $\mu$ and $\alpha$ used in six test cases based on liquid type and superheat. These values are adapted from Plesset's paper.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{Fluid} & \textbf{Superheat (K)} & $\boldsymbol{\mu}$ & $\boldsymbol{\alpha}$ \\
+\hline
+Water & 20 & 5.324 & $7 \times 10^8$ \\
+Water & 50 & 4.756 & $8 \times 10^8$ \\
+Water & 100 & 5.491 & $9 \times 10^8$ \\
+\hline
+Sodium & 340 & 0.000403 & $1 \times 10^8$ \\
+Sodium & 90 & 0.00463 & $1.03 \times 10^7$ \\
+Sodium & 15 & 0.0501 & $3 \times 10^6$ \\
+\hline
+\end{tabular}
+\caption{Values of $\mu$ and $\alpha$ for six simulation cases.}
+\label{tab:mu_alpha_cases}
+\end{table}
+
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.45\textwidth]{Photos for cavitation/Figure_3.png}
+    \caption{Your caption here.}
+    \label{fig:your_label}
+\end{figure}
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.45\textwidth]{Photos for cavitation/Figure_5.png}
+    \caption{Your caption here.}
+    \label{fig:your_label}
+\end{figure}
+
+
+
+\section{Conclusion}
+
+We analyze the impact of superheat on bubble growth, explaining the observed trends and oscillations at low superheat. Improvements over earlier models and potential enhancements to the current model are discussed.
+
+We can conclude that vapor bubble growth occurs in phases: initial phases are driven by inertial effects, followed by a phase controlled by thermal diffusion. This behavior is reflected in the evolution of the bubble radius over time.
+
+\subsection{Answers to Key Questions}
+
+\textbf{Why do the non-dimensional graphs look the way they do?}
+The non-dimensional graphs depict the underlying physical regimes of bubble growth. Early growth is inertia-dominated, while later stages transition to thermal diffusion control, resulting in distinct slopes and curvature changes in the graphs.
+
+\textbf{Why do we get waviness in low superheat?}
+At low superheat, the available thermal energy is marginal, making the bubble more sensitive to perturbations and transient effects. This leads to oscillations or waviness in the radius and temperature evolution.
+
+\textbf{What do we observe in trends of superheat and vapor bubble growth?}
+Higher superheat results in faster bubble growth and larger maximum radii, due to a greater thermal energy reservoir. Lower superheat slows the growth rate and limits the bubble's maximum size.
+
+\textbf{Why was the new paper better than the old paper?}
+The new approach incorporates a better treatment of thermal boundary layer effects and mass flux at the bubble interface, leading to a more accurate prediction of bubble dynamics over a wider range of conditions compared to earlier simplistic models.
+
+\textbf{What improvements could we make to this calculation?}
+\\Future improvements could include:
+\begin{itemize}
+    \item Accounting for viscous dissipation and surface tension more accurately.
+    \item Implementing adaptive time-stepping to better resolve sharp transitions.
+    \item Including non-isothermal effects inside the vapor bubble.
+\end{itemize}
+
+\textbf{Why are we not getting the relations from the first paper by solving equations 5 and 19?}
+The discrepancies arise because equations 5 and 19 from the earlier paper neglect certain transient effects and phase change dynamics at the bubble interface. Our model incorporates a more complete set of boundary conditions and time-dependent thermal diffusion, leading to differences in the resulting relations.
+
+\begin{thebibliography}{99}
+\bibitem{plesset1954} M. S. Plesset and S. A. Zwick, J. Appl. Phys. \textbf{25}, 493 (1954).
+\bibitem{dalle1975} Dalle Donne and Ferranti, Int. J. Heat Mass Transfer \textbf{18}, 198 (1975).
+\bibitem{fink1981} J. K. Fink and L. Leibowitz, \textit{Thermodynamic and Transport Properties of Sodium Liquid and Vapor}, ANL/RE-95/2, Argonne National Laboratory, 1995.
+\bibitem{iapws1995} The International Association for the Properties of Water and Steam (IAPWS), \textit{Properties of Water and Steam: Thermodynamic Properties of Ordinary Water Substance}, 1995.
+\bibitem{daschatterjee2021} S. K. Das and D. Chatterjee, \textit{Vapor-Liquid Two Phase Flow and Phase Change}, Springer, 2021.
+\end{thebibliography}
+
 
 \end{document}
-
